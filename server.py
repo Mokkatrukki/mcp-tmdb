@@ -348,5 +348,129 @@ async def discover(
     return "\n\n".join(lines)
 
 
+@mcp.tool()
+async def search_person(query: str) -> str:
+    """
+    Hae henkilöä nimellä (näyttelijä, ohjaaja, käsikirjoittaja...).
+    query: hakusana
+    """
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": query,
+        "language": "fi",
+        "include_adult": False,
+        "page": 1,
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}/search/person", params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    results = data.get("results", [])
+    total = data.get("total_results", 0)
+
+    if not results:
+        return f"Ei tuloksia haulle '{query}'."
+
+    lines = [f"Hakutulos: {total} osumaa (näytetään {len(results)})\n"]
+    for person in results:
+        pid = person.get("id")
+        name = person.get("name", "?")
+        dept = person.get("known_for_department", "")
+        known_for = person.get("known_for", [])
+
+        known_titles = []
+        for item in known_for[:3]:
+            title = item.get("title") or item.get("name") or "?"
+            year = (item.get("release_date") or item.get("first_air_date") or "")[:4]
+            known_titles.append(f"{title} ({year})" if year else title)
+
+        lines.append(
+            f"[{pid}] {name}" + (f" — {dept}" if dept else "") + "\n"
+            f"  Tunnettu: {', '.join(known_titles) or '-'}"
+        )
+
+    return "\n\n".join(lines)
+
+
+@mcp.tool()
+async def get_person(id: int) -> str:
+    """
+    Hae henkilön tiedot ja tärkeimmät roolit TMDB-id:llä.
+    id: TMDB-id (saadaan search_person-hausta)
+    """
+    params = {"api_key": TMDB_API_KEY, "language": "fi", "append_to_response": "combined_credits"}
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}/person/{id}", params=params)
+        r.raise_for_status()
+
+    d = r.json()
+    credits = d.get("combined_credits", {})
+
+    name = d.get("name", "?")
+    dept = d.get("known_for_department", "")
+    birthday = d.get("birthday") or ""
+    deathday = d.get("deathday") or ""
+    place = d.get("place_of_birth") or ""
+    bio = (d.get("biography") or "")[:400]
+
+    date_str = birthday[:4] if birthday else "?"
+    if deathday:
+        date_str += f"–{deathday[:4]}"
+
+    lines = [
+        f"{name} ({date_str})",
+        f"Ammatti: {dept}" if dept else None,
+        f"Syntymäpaikka: {place}" if place else None,
+        "",
+        bio if bio else None,
+    ]
+
+    # Näyttelijänä: cast (järjestys popularity desc), ei Self-esiintymisiä, ei duplikaatteja
+    cast = credits.get("cast", [])
+    seen_ids = set()
+    cast_filtered = []
+    for item in sorted(cast, key=lambda x: x.get("vote_count", 0), reverse=True):
+        character = item.get("character") or ""
+        if character.lower().startswith("self"):
+            continue
+        item_id = item.get("id")
+        if item_id in seen_ids:
+            continue
+        seen_ids.add(item_id)
+        cast_filtered.append(item)
+        if len(cast_filtered) == 10:
+            break
+    cast_sorted = cast_filtered
+    if cast_sorted:
+        lines += ["", "Tunnetuimmat roolit:"]
+        for item in cast_sorted:
+            title = item.get("title") or item.get("name") or "?"
+            year = (item.get("release_date") or item.get("first_air_date") or "")[:4]
+            character = item.get("character") or ""
+            media = "elokuva" if item.get("media_type") == "movie" else "sarja"
+            item_id = item.get("id")
+            line = f"  [{item_id}] {title}" + (f" ({year})" if year else "") + f" — {media}"
+            if character:
+                line += f", rooli: {character}"
+            lines.append(line)
+
+    # Ohjaajana/muussa crew-roolissa
+    crew = credits.get("crew", [])
+    directing = [c for c in crew if c.get("job") == "Director"]
+    directing_sorted = sorted(directing, key=lambda x: x.get("vote_count", 0), reverse=True)[:5]
+    if directing_sorted:
+        lines += ["", "Ohjaustöitä:"]
+        for item in directing_sorted:
+            title = item.get("title") or item.get("name") or "?"
+            year = (item.get("release_date") or item.get("first_air_date") or "")[:4]
+            item_id = item.get("id")
+            lines.append(f"  [{item_id}] {title}" + (f" ({year})" if year else ""))
+
+    return "\n".join(line for line in lines if line is not None)
+
+
 if __name__ == "__main__":
     mcp.run()
