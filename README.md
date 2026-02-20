@@ -1,6 +1,8 @@
 # mcp-tmdb
 
-MCP-palvelin, joka yhdistää Claude Code -agenttiin TMDB:n elokuva- ja sarjadatan. Luonnollisella kielellä voi hakea elokuvia ja sarjoja, tarkastella tietoja ja vertailla vaihtoehtoja.
+MCP-palvelin, joka yhdistää chattiälyn TMDB:n elokuva- ja sarjadataan. Luonnollisella kielellä voi hakea elokuvia ja sarjoja, suodattaa genren, kielen tai suoratoistopalvelun mukaan ja tarkastella tekijätietoja.
+
+> "Mitäs tänään katsottaisiin?"
 
 ## Asennus
 
@@ -24,12 +26,43 @@ Claude Code tunnistaa palvelimen automaattisesti `.mcp.json`:n kautta. Käynnist
 
 ## Työkalut
 
+### Haku
+
 | Työkalu | Kuvaus |
 |---|---|
-| `search_by_title` | Hae elokuvia tai sarjoja nimellä |
-| `get_details` | Tarkemmat tiedot TMDB-id:llä |
-| `list_genres` | Genret suomeksi |
-| `list_certifications` | Suomen ikärajat |
+| `search_by_title(query, type)` | Hae elokuvia tai sarjoja nimellä |
+| `search_multi(query)` | Hae elokuvia, sarjoja ja henkilöitä yhdellä haulla |
+| `search_person(query)` | Hae henkilöä nimellä (näyttelijä, ohjaaja...) |
+
+### Tiedot
+
+| Työkalu | Kuvaus |
+|---|---|
+| `get_details(id, type)` | Elokuvan tai sarjan tarkemmat tiedot |
+| `get_person(id)` | Henkilön tiedot ja tärkeimmät roolit |
+
+### Suodatushaku
+
+| Työkalu | Kuvaus |
+|---|---|
+| `discover(...)` | Hae filtterien avulla: genre, avainsanat, vuosi, arvosana, kesto, kieli, suoratoistopalvelu |
+
+### Apulistat
+
+| Työkalu | Kuvaus |
+|---|---|
+| `list_genres(type)` | Käytettävissä olevat genret suomeksi |
+| `list_certifications(type)` | Suomen ikärajat |
+| `list_watch_providers(type)` | Suomessa saatavilla olevat suoratoistopalvelut |
+
+## Rakennusjärjestys
+
+- [x] Taso 1 — Perushaku: `search_by_title`, `get_details`, `list_genres`
+- [x] Taso 2 — Suodatushaku: `discover` (genre, keyword, watch provider...)
+- [x] Taso 2 — Henkilöhaku: `search_person`, `get_person`
+- [x] Taso 2 — Monihaku: `search_multi`
+- [ ] Taso 3 — Älykäs haku: luonnollinen kieli → discover-parametrit (LLM-tulkinta)
+- [ ] Taso 4 — Web UI: hakuloki, palvelimen tila
 
 ## Stack
 
