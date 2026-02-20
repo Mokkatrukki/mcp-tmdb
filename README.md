@@ -47,6 +47,13 @@ Claude Code tunnistaa palvelimen automaattisesti `.mcp.json`:n kautta. Käynnist
 |---|---|
 | `discover(...)` | Hae filtterien avulla: genre, avainsanat, vuosi, arvosana, kesto, kieli, suoratoistopalvelu |
 
+### Trendit ja suositukset
+
+| Työkalu | Kuvaus |
+|---|---|
+| `trending(type, time_window)` | Trendaavat elokuvat, sarjat tai kaikki (day/week) |
+| `get_recommendations(id, type)` | Suosituksia elokuvan tai sarjan perusteella |
+
 ### Apulistat
 
 | Työkalu | Kuvaus |
@@ -61,6 +68,7 @@ Claude Code tunnistaa palvelimen automaattisesti `.mcp.json`:n kautta. Käynnist
 - [x] Taso 2 — Suodatushaku: `discover` (genre, keyword, watch provider...)
 - [x] Taso 2 — Henkilöhaku: `search_person`, `get_person`
 - [x] Taso 2 — Monihaku: `search_multi`
+- [x] Taso 2 — Trendit ja suositukset: `trending`, `get_recommendations`
 - [ ] Taso 3 — Älykäs haku: luonnollinen kieli → discover-parametrit (LLM-tulkinta)
 - [ ] Taso 4 — Web UI: hakuloki, palvelimen tila
 

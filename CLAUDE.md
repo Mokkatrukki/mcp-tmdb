@@ -41,20 +41,26 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 
 ## Missä ollaan nyt
 
-**Tehty (Taso 1 valmis):**
-- Projektirakenne pystytetty (`pyproject.toml`, `.env`, `.mcp.json`)
-- `server.py` — FastMCP + lifespan-käynnistys
-- Startup-muisti: genret (FI), sertifikaatit (FI) ja watch providers (FI) ladataan käynnistyksessä
-- Työkalut: `list_genres`, `list_certifications`, `search_by_title`, `get_details`
-- Git-repo pystytetty, remote GitHubissa (mokkatrukki/mcp-tmdb)
+**Tehty:**
+- Projektirakenne: `pyproject.toml`, `.env`, `.mcp.json`, GitHub-repo
+- Startup-muisti: genret (FI), sertifikaatit (FI), watch providers (FI)
+- 11 työkalua käytössä (ks. alla)
 
-**Tehty (Taso 2 — discover):**
-- `discover` — suodatushaku: genre (FI-nimet), vuosi, arvosana, äänimäärä, kesto, kieli, watch_provider
-- `list_watch_providers` — listaa FI:ssä saatavilla olevat suoratoistopalvelut
+**Työkalut:**
+- `search_by_title` — nimihaku (elokuva/sarja)
+- `search_multi` — nimihaku kaikki tyypit kerralla
+- `search_person` — henkilöhaku
+- `get_details` — elokuvan/sarjan tiedot
+- `get_person` — henkilön tiedot + roolit (append_to_response)
+- `discover` — suodatushaku: genre (FI-nimet), keywords, vuosi, arvosana, kesto, kieli, watch_provider
+- `get_recommendations` — suositukset id:n perusteella
+- `trending` — trendaavat (movie/tv/all, day/week)
+- `list_genres` — genret (FI)
+- `list_certifications` — ikärajat (FI)
+- `list_watch_providers` — suoratoistopalvelut (FI)
 
-**Seuraavaksi (Taso 2 jatkuu):**
-- Henkilöhaku: ohjaaja, näyttelijä
-- Suositukset: "samanlaisia kuin X"
+**Seuraavaksi (Taso 3):**
+- `smart_search` — luonnollinen kieli → discover-parametrit (LLM-tulkinta)
 
 Dokumentaatio: `FLOWS.md`, `TMDB_API.md`
 
