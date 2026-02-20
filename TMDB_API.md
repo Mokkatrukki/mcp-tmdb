@@ -21,6 +21,8 @@ Haetaan kerran käynnistyksen yhteydessä.
 | ✅ GET /certification/movie/list | ikärajat (FI) |
 | ✅ GET /certification/tv/list | ikärajat sarjoille |
 | ✅ GET /configuration/countries | maiden lista, regiooni-asetuksia varten |
+| ✅ GET /watch/providers/movie | FI-suoratoistopalvelut (elokuvat) |
+| ✅ GET /watch/providers/tv | FI-suoratoistopalvelut (sarjat) |
 
 ---
 
@@ -92,7 +94,7 @@ LLM muuntaa luonnollisen kielen näiksi parametreiksi.
 
 | Endpoint | Käyttö |
 |----------|--------|
-| ✅ GET /discover/movie | filtteröity elokuvahaku |
+| ✅ GET /discover/movie | filtteröity elokuvahaku (genre, vuosi, arvosana, kesto, kieli, watch_provider) |
 | ✅ GET /discover/tv | filtteröity sarjahaku |
 
 Tärkeimmät Discover-parametrit:

@@ -44,12 +44,15 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 **Tehty (Taso 1 valmis):**
 - Projektirakenne pystytetty (`pyproject.toml`, `.env`, `.mcp.json`)
 - `server.py` — FastMCP + lifespan-käynnistys
-- Startup-muisti: genret (FI) ja sertifikaatit (FI) ladataan käynnistyksessä
+- Startup-muisti: genret (FI), sertifikaatit (FI) ja watch providers (FI) ladataan käynnistyksessä
 - Työkalut: `list_genres`, `list_certifications`, `search_by_title`, `get_details`
 - Git-repo pystytetty, remote GitHubissa (mokkatrukki/mcp-tmdb)
 
-**Seuraavaksi (Taso 2):**
-- Suodatushaut: genre, vuosi, arvosana (discover-endpoint)
+**Tehty (Taso 2 — discover):**
+- `discover` — suodatushaku: genre (FI-nimet), vuosi, arvosana, äänimäärä, kesto, kieli, watch_provider
+- `list_watch_providers` — listaa FI:ssä saatavilla olevat suoratoistopalvelut
+
+**Seuraavaksi (Taso 2 jatkuu):**
 - Henkilöhaku: ohjaaja, näyttelijä
 - Suositukset: "samanlaisia kuin X"
 
