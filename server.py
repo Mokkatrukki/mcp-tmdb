@@ -234,6 +234,7 @@ async def list_watch_providers(type: str = "movie") -> str:
 async def discover(
     type: str = "movie",
     genres: list[str] | None = None,
+    keywords: list[str] | None = None,
     year: int | None = None,
     min_rating: float | None = None,
     min_votes: int = 100,
@@ -246,6 +247,7 @@ async def discover(
     Hae elokuvia tai sarjoja filtterien avulla.
     type: 'movie' tai 'tv'
     genres: lista genrenimistä suomeksi, esim. ["toiminta", "komedia"]
+    keywords: lista avainsanoista englanniksi, esim. ["witch", "time travel"]
     year: julkaisuvuosi
     min_rating: vähimmäisarvosana (0–10)
     min_votes: vähimmäisäänimäärä (oletus 100)
@@ -293,6 +295,20 @@ async def discover(
 
     if language:
         params["with_original_language"] = language
+
+    if keywords:
+        async with httpx.AsyncClient() as client:
+            kw_ids = []
+            for kw in keywords:
+                r = await client.get(
+                    f"{TMDB_BASE}/search/keyword",
+                    params={"api_key": TMDB_API_KEY, "query": kw},
+                )
+                results_kw = r.json().get("results", [])
+                if results_kw:
+                    kw_ids.append(str(results_kw[0]["id"]))
+            if kw_ids:
+                params["with_keywords"] = "|".join(kw_ids)
 
     if watch_provider:
         provider_list = memory["movie_providers"] if type == "movie" else memory["tv_providers"]
@@ -344,6 +360,84 @@ async def discover(
             f"  Arvosana: {vote:.1f}/10 ({votes} ääntä)\n"
             f"  {overview}"
         )
+
+    return "\n\n".join(lines)
+
+
+@mcp.tool()
+async def search_multi(query: str) -> str:
+    """
+    Hae elokuvia, sarjoja ja henkilöitä yhdellä haulla.
+    query: hakusana
+    """
+    params = {
+        "api_key": TMDB_API_KEY,
+        "query": query,
+        "language": "fi",
+        "include_adult": False,
+        "page": 1,
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}/search/multi", params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    results = data.get("results", [])
+    total = data.get("total_results", 0)
+
+    if not results:
+        return f"Ei tuloksia haulle '{query}'."
+
+    movie_genre_map = {g["id"]: g["name"] for g in memory["movie_genres"]}
+    tv_genre_map = {g["id"]: g["name"] for g in memory["tv_genres"]}
+
+    lines = [f"Hakutulos: {total} osumaa (näytetään {len(results)})\n"]
+    for item in results:
+        media_type = item.get("media_type")
+
+        if media_type == "movie":
+            title = item.get("title", "?")
+            original = item.get("original_title", "")
+            name_str = title if title == original or not original else f"{title} ({original})"
+            date = item.get("release_date", "")[:4]
+            genre_names = [movie_genre_map.get(gid, str(gid)) for gid in item.get("genre_ids", [])]
+            vote = item.get("vote_average", 0)
+            votes = item.get("vote_count", 0)
+            overview = item.get("overview", "")[:150]
+            lines.append(
+                f"[elokuva/{item.get('id')}] {name_str} ({date})\n"
+                f"  Genret: {', '.join(genre_names) or '-'} | {vote:.1f}/10 ({votes} ääntä)\n"
+                f"  {overview}"
+            )
+        elif media_type == "tv":
+            name = item.get("name", "?")
+            original = item.get("original_name", "")
+            name_str = name if name == original or not original else f"{name} ({original})"
+            date = item.get("first_air_date", "")[:4]
+            genre_names = [tv_genre_map.get(gid, str(gid)) for gid in item.get("genre_ids", [])]
+            vote = item.get("vote_average", 0)
+            votes = item.get("vote_count", 0)
+            overview = item.get("overview", "")[:150]
+            lines.append(
+                f"[sarja/{item.get('id')}] {name_str} ({date})\n"
+                f"  Genret: {', '.join(genre_names) or '-'} | {vote:.1f}/10 ({votes} ääntä)\n"
+                f"  {overview}"
+            )
+        elif media_type == "person":
+            pid = item.get("id")
+            pname = item.get("name", "?")
+            dept = item.get("known_for_department", "")
+            known_for = item.get("known_for", [])
+            known_titles = []
+            for kf in known_for[:3]:
+                t = kf.get("title") or kf.get("name") or "?"
+                y = (kf.get("release_date") or kf.get("first_air_date") or "")[:4]
+                known_titles.append(f"{t} ({y})" if y else t)
+            lines.append(
+                f"[henkilö/{pid}] {pname}" + (f" — {dept}" if dept else "") + "\n"
+                f"  Tunnettu: {', '.join(known_titles) or '-'}"
+            )
 
     return "\n\n".join(lines)
 
