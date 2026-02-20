@@ -566,5 +566,118 @@ async def get_person(id: int) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
+@mcp.tool()
+async def trending(type: str = "all", time_window: str = "week") -> str:
+    """
+    Hae trendaavat elokuvat, sarjat tai henkilöt.
+    type: 'movie', 'tv' tai 'all'
+    time_window: 'day' tai 'week'
+    """
+    endpoint = f"/trending/{type}/{time_window}"
+    params = {"api_key": TMDB_API_KEY, "language": "fi"}
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}{endpoint}", params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    results = data.get("results", [])
+    if not results:
+        return "Ei tuloksia."
+
+    movie_genre_map = {g["id"]: g["name"] for g in memory["movie_genres"]}
+    tv_genre_map = {g["id"]: g["name"] for g in memory["tv_genres"]}
+    window_str = "tänään" if time_window == "day" else "tällä viikolla"
+
+    lines = [f"Trendaavat ({window_str})\n"]
+    for item in results:
+        media_type = item.get("media_type", type)
+
+        if media_type == "person":
+            pid = item.get("id")
+            name = item.get("name", "?")
+            dept = item.get("known_for_department", "")
+            known_for = item.get("known_for", [])
+            known_titles = [kf.get("title") or kf.get("name") or "?" for kf in known_for[:3]]
+            lines.append(
+                f"[henkilö/{pid}] {name}" + (f" — {dept}" if dept else "") + "\n"
+                f"  Tunnettu: {', '.join(known_titles) or '-'}"
+            )
+            continue
+
+        if media_type == "movie":
+            title = item.get("title", "?")
+            original = item.get("original_title", "")
+            date = item.get("release_date", "")[:4]
+            genre_map = movie_genre_map
+        else:
+            title = item.get("name", "?")
+            original = item.get("original_name", "")
+            date = item.get("first_air_date", "")[:4]
+            genre_map = tv_genre_map
+
+        name_str = title if title == original or not original else f"{title} ({original})"
+        genre_names = [genre_map.get(gid, str(gid)) for gid in item.get("genre_ids", [])]
+        vote = item.get("vote_average", 0)
+        votes = item.get("vote_count", 0)
+        overview = item.get("overview", "")[:150]
+
+        lines.append(
+            f"[{media_type}/{item.get('id')}] {name_str} ({date})\n"
+            f"  Genret: {', '.join(genre_names) or '-'} | {vote:.1f}/10 ({votes} ääntä)\n"
+            f"  {overview}"
+        )
+
+    return "\n\n".join(lines)
+
+
+@mcp.tool()
+async def get_recommendations(id: int, type: str = "movie") -> str:
+    """
+    Hae suosituksia elokuvan tai sarjan perusteella.
+    id: TMDB-id (saadaan search_by_title- tai get_details-hausta)
+    type: 'movie' tai 'tv'
+    """
+    endpoint = f"/movie/{id}/recommendations" if type == "movie" else f"/tv/{id}/recommendations"
+    params = {"api_key": TMDB_API_KEY, "language": "fi", "page": 1}
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}{endpoint}", params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    results = data.get("results", [])
+    if not results:
+        return "Ei suosituksia."
+
+    genre_list = memory["movie_genres"] if type == "movie" else memory["tv_genres"]
+    genre_map = {g["id"]: g["name"] for g in genre_list}
+
+    lines = [f"Suosituksia ({len(results)} kpl)\n"]
+    for item in results:
+        if type == "movie":
+            title = item.get("title", "?")
+            original = item.get("original_title", "")
+            date = item.get("release_date", "")[:4]
+        else:
+            title = item.get("name", "?")
+            original = item.get("original_name", "")
+            date = item.get("first_air_date", "")[:4]
+
+        name_str = title if title == original or not original else f"{title} ({original})"
+        genre_names = [genre_map.get(gid, str(gid)) for gid in item.get("genre_ids", [])]
+        vote = item.get("vote_average", 0)
+        votes = item.get("vote_count", 0)
+        overview = item.get("overview", "")[:150]
+
+        lines.append(
+            f"[{item.get('id')}] {name_str} ({date})\n"
+            f"  Genret: {', '.join(genre_names) or '-'} | {vote:.1f}/10 ({votes} ääntä)\n"
+            f"  {overview}"
+        )
+
+    return "\n\n".join(lines)
+
+
 if __name__ == "__main__":
     mcp.run()
