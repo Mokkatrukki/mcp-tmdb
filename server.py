@@ -1,64 +1,18 @@
 from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
-from dotenv import load_dotenv
 import httpx
-import os
 
-load_dotenv()
+from search.memory import memory, load_memory, TMDB_API_KEY, TMDB_BASE
+from search.graph import build_graph
 
-TMDB_API_KEY = os.getenv("TMDB_API_KEY_V3")
-TMDB_BASE = "https://api.themoviedb.org/3"
-
-# Startup-muisti — ladataan kerran käynnistyksen yhteydessä
-memory: dict = {
-    "movie_genres": [],   # [{id, name}]
-    "tv_genres": [],      # [{id, name}]
-    "movie_certifications": [],  # FI-sertifikaatit [{certification, meaning, order}]
-    "tv_certifications": [],     # FI-sertifikaatit
-    "movie_providers": [],  # FI-suoratoistopalvelut [{provider_id, provider_name}]
-    "tv_providers": [],     # FI-suoratoistopalvelut
-    "keyword_cache": {},  # kasvava cache: "noir" → "53"
-}
-
-
-async def load_memory():
-    params = {"api_key": TMDB_API_KEY}
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{TMDB_BASE}/genre/movie/list", params={**params, "language": "fi"})
-        memory["movie_genres"] = r.json()["genres"]
-
-        r = await client.get(f"{TMDB_BASE}/genre/tv/list", params={**params, "language": "fi"})
-        memory["tv_genres"] = r.json()["genres"]
-
-        r = await client.get(f"{TMDB_BASE}/certification/movie/list", params=params)
-        memory["movie_certifications"] = r.json()["certifications"].get("FI", [])
-
-        r = await client.get(f"{TMDB_BASE}/certification/tv/list", params=params)
-        memory["tv_certifications"] = r.json()["certifications"].get("FI", [])
-
-        r = await client.get(f"{TMDB_BASE}/watch/providers/movie", params={**params, "watch_region": "FI"})
-        memory["movie_providers"] = [
-            {"provider_id": p["provider_id"], "provider_name": p["provider_name"]}
-            for p in r.json().get("results", [])
-        ]
-
-        r = await client.get(f"{TMDB_BASE}/watch/providers/tv", params={**params, "watch_region": "FI"})
-        memory["tv_providers"] = [
-            {"provider_id": p["provider_id"], "provider_name": p["provider_name"]}
-            for p in r.json().get("results", [])
-        ]
-
-    print(f"Muisti ladattu: {len(memory['movie_genres'])} elokuvagenreä, "
-          f"{len(memory['tv_genres'])} sarjagenreä, "
-          f"{len(memory['movie_certifications'])} elokuvasertifikaattia (FI), "
-          f"{len(memory['tv_certifications'])} sarjasertifikaattia (FI), "
-          f"{len(memory['movie_providers'])} elokuvapalvelua (FI), "
-          f"{len(memory['tv_providers'])} sarjapalvelua (FI)")
+_search_graph = None
 
 
 @asynccontextmanager
 async def lifespan(app):
+    global _search_graph
     await load_memory()
+    _search_graph = build_graph()
     yield
 
 
@@ -243,6 +197,11 @@ async def discover(
     max_runtime: int | None = None,
     language: str | None = None,
     watch_provider: str | None = None,
+    with_cast: int | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    date_gte: str | None = None,
+    date_lte: str | None = None,
 ) -> str:
     """
     Hae elokuvia tai sarjoja filtterien avulla.
@@ -256,6 +215,11 @@ async def discover(
     max_runtime: enimmäiskesto minuutteina (vain elokuvat)
     language: alkuperäiskieli, esim. "fi", "en", "ko"
     watch_provider: suoratoistopalvelun nimi, esim. "Netflix", "Disney Plus"
+    with_cast: näyttelijän/ohjaajan TMDB-id filtteriksi
+    year_from: aikavälin alku (primary_release_date.gte)
+    year_to: aikavälin loppu (primary_release_date.lte)
+    date_gte: ilmestymispäivä alkaen "YYYY-MM-DD" (tv: first_air_date.gte)
+    date_lte: ilmestymispäivä päättyen "YYYY-MM-DD" (tv: first_air_date.lte)
     """
     genre_list = memory["movie_genres"] if type == "movie" else memory["tv_genres"]
     genre_map = {g["name"].lower(): g["id"] for g in genre_list}
@@ -287,6 +251,16 @@ async def discover(
             params["primary_release_year"] = year
         else:
             params["first_air_date_year"] = year
+
+    if year_from:
+        params["primary_release_date.gte"] = f"{year_from}-01-01"
+    if year_to:
+        params["primary_release_date.lte"] = f"{year_to}-12-31"
+
+    if date_gte:
+        params["first_air_date.gte"] = date_gte
+    if date_lte:
+        params["first_air_date.lte"] = date_lte
 
     if min_rating is not None:
         params["vote_average.gte"] = min_rating
@@ -327,6 +301,9 @@ async def discover(
             return f"Tuntematon suoratoistopalvelu: '{watch_provider}'. Käytä list_watch_providers-työkalua nähdäksesi saatavilla olevat palvelut."
         params["with_watch_providers"] = match["provider_id"]
         params["watch_region"] = "FI"
+
+    if with_cast is not None:
+        params["with_cast"] = with_cast
 
     endpoint = "/discover/movie" if type == "movie" else "/discover/tv"
 
@@ -529,7 +506,6 @@ async def get_person(id: int) -> str:
         bio if bio else None,
     ]
 
-    # Näyttelijänä: cast (järjestys popularity desc), ei Self-esiintymisiä, ei duplikaatteja
     cast = credits.get("cast", [])
     seen_ids = set()
     cast_filtered = []
@@ -544,10 +520,10 @@ async def get_person(id: int) -> str:
         cast_filtered.append(item)
         if len(cast_filtered) == 10:
             break
-    cast_sorted = cast_filtered
-    if cast_sorted:
+
+    if cast_filtered:
         lines += ["", "Tunnetuimmat roolit:"]
-        for item in cast_sorted:
+        for item in cast_filtered:
             title = item.get("title") or item.get("name") or "?"
             year = (item.get("release_date") or item.get("first_air_date") or "")[:4]
             character = item.get("character") or ""
@@ -558,7 +534,6 @@ async def get_person(id: int) -> str:
                 line += f", rooli: {character}"
             lines.append(line)
 
-    # Ohjaajana/muussa crew-roolissa
     crew = credits.get("crew", [])
     directing = [c for c in crew if c.get("job") == "Director"]
     directing_sorted = sorted(directing, key=lambda x: x.get("vote_count", 0), reverse=True)[:5]
@@ -709,7 +684,6 @@ async def get_keywords(id: int, type: str = "movie") -> str:
     if not keywords:
         return "Ei keywordejä."
 
-    # Lisätään cacheen samalla
     for kw in keywords:
         name = kw.get("name", "").lower()
         kw_id = str(kw.get("id", ""))
@@ -719,6 +693,23 @@ async def get_keywords(id: int, type: str = "movie") -> str:
     lines = [f"Keywordit ({len(keywords)} kpl):"]
     lines += [f"  [{kw['id']}] {kw['name']}" for kw in keywords]
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def smart_search(query: str) -> str:
+    """
+    Hae elokuvia, sarjoja tai henkilöitä luonnollisella kielellä.
+    Tulkitsee kyselyn automaattisesti ja reitittää oikeaan hakuun.
+    query: hakukysely suomeksi tai englanniksi
+    """
+    if _search_graph is None:
+        return "Virhe: hakugraafi ei ole alustettu."
+
+    try:
+        result = await _search_graph.ainvoke({"query": query})
+        return result.get("final_result") or result.get("discover_result") or "Ei tuloksia."
+    except Exception as e:
+        return f"Virhe hakua suorittaessa: {e}"
 
 
 if __name__ == "__main__":

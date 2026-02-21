@@ -6,4 +6,7 @@ dependencies = [
     "mcp[cli]",
     "httpx",
     "python-dotenv",
+    "google-genai>=1.64.0",
+    "langgraph>=1.0.9",
+    "pytest>=9.0.2",
 ]

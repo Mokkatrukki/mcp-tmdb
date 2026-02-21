@@ -60,8 +60,19 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - `list_certifications` — ikärajat (FI)
 - `list_watch_providers` — suoratoistopalvelut (FI)
 
-**Seuraavaksi (Taso 3):**
-- `smart_search` — luonnollinen kieli → discover-parametrit (LLM-tulkinta)
+- `smart_search` — LangGraph-pohjainen älykäs haku (12 solmua, ehdolliset polut)
+
+**Arkkitehtuuri:**
+- `search/` — modulaarinen paketti: memory, state, prompts, nodes, graph
+- `data/keywords.json` — verifioitu TMDB-keyword-kartta ID:ineen
+- `tests/test_prompt.py` — 21 promptin yleistymistestiä (21/21 läpi)
+
+**smart_search -polut:**
+- `discover` / `both_types` — suodatushaku (myös movie+tv yhdistettynä)
+- `similar_to` — referenssiteos → keywords + suositukset + discover + merge
+- `lookup` / `person` / `trending` — suorat haut
+- `airing_now` — nykyinen season-alue automaattisesti
+- `year_from/year_to` — aikavälit (ei vain yksittäinen vuosi)
 
 Dokumentaatio: `FLOWS.md`, `TMDB_API.md`
 
