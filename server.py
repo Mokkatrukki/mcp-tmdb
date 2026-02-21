@@ -5,7 +5,7 @@ from mcp.server.fastmcp import FastMCP
 import httpx
 
 from search.memory import memory, load_memory, TMDB_API_KEY, TMDB_BASE
-from search.prompts import classify_query, SmartSearchIntent
+from search.prompts import classify_query, rerank_candidates, SmartSearchIntent
 
 
 @asynccontextmanager
@@ -697,11 +697,60 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
     """Hae teoksia jotka ovat samankaltaisia kuin referenssiteos."""
     ref_type = intent.media_type
 
+    # Keywordit jotka ovat liian geneerisiä löytämään temaattisesti samankaltaisia teoksia
+    _SKIP_KW = {
+        "anime", "based on light novel", "based on manga", "based on novel",
+        "based on web novel", "based on a video game", "magic", "adventure",
+        "romance", "based on comic book", "superhero",
+    }
+
+    async def _fetch_keyword_discover(client, ref_id, ref_lang, primary_genre_id, user_kw_ids):
+        """Hae referenssin keywordit → yhdistä user-keywordeihin → discover (OR).
+        Palauttaa (disc_results, ref_kw_names) jossa ref_kw_names on filtteröity lista keyword-nimistä."""
+        kw_field = "results" if ref_type == "tv" else "keywords"
+        kw_r = await client.get(
+            f"{TMDB_BASE}/{ref_type}/{ref_id}/keywords",
+            params={"api_key": TMDB_API_KEY},
+        )
+        ref_kws = kw_r.json().get(kw_field, [])
+
+        # Suodatetaan generiset pois, otetaan enintään 8 tärkeintä
+        filtered = [kw for kw in ref_kws if kw.get("name", "").lower() not in _SKIP_KW][:8]
+        ref_kw_ids = [str(kw["id"]) for kw in filtered]
+        ref_kw_names = [kw["name"] for kw in filtered]
+
+        # Päivitetään keyword-cache samalla
+        for kw in ref_kws:
+            name = kw.get("name", "").lower()
+            kw_id = str(kw.get("id", ""))
+            if name and kw_id:
+                memory["keyword_cache"][name] = kw_id
+
+        # User-keywordit ensin (tärkeämmät), sitten ref-keywordit — deduplikoitu
+        all_kw_ids = list(dict.fromkeys(user_kw_ids + ref_kw_ids))
+        if not all_kw_ids:
+            return [], ref_kw_names
+
+        disc_r = await client.get(
+            f"{TMDB_BASE}/discover/{ref_type}",
+            params={
+                "api_key": TMDB_API_KEY,
+                "language": "fi",
+                "with_original_language": ref_lang or "",
+                "with_genres": str(primary_genre_id) if primary_genre_id else "",
+                "with_keywords": "|".join(all_kw_ids),
+                "sort_by": "vote_average.desc",
+                "vote_count.gte": 100,
+                "include_adult": True,
+            },
+        )
+        return disc_r.json().get("results", []), ref_kw_names
+
     async with httpx.AsyncClient() as client:
         # 1. Hae referenssiteos
         r = await client.get(
             f"{TMDB_BASE}/search/{ref_type}",
-            params={"api_key": TMDB_API_KEY, "query": intent.reference_title, "language": "fi", "include_adult": False},
+            params={"api_key": TMDB_API_KEY, "query": intent.reference_title, "language": "fi", "include_adult": True},
         )
         results = r.json().get("results", [])
         if not results:
@@ -713,43 +762,66 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
         ref_genre_ids = ref.get("genre_ids", [])
         ref_name = ref.get("name") or ref.get("title", "?")
 
-        # 2. Hae suositukset ja discover rinnakkain
-        rec_r, disc_r = await asyncio.gather(
+        # 2. Resolvo intent.keywords → TMDB-ID:t
+        user_kw_ids = []
+        if intent.keywords:
+            for kw in intent.keywords:
+                kw_lower = kw.lower()
+                if kw_lower in memory["keyword_cache"]:
+                    user_kw_ids.append(memory["keyword_cache"][kw_lower])
+                else:
+                    r_kw = await client.get(
+                        f"{TMDB_BASE}/search/keyword",
+                        params={"api_key": TMDB_API_KEY, "query": kw},
+                    )
+                    results_kw = r_kw.json().get("results", [])
+                    if results_kw:
+                        kw_id = str(results_kw[0]["id"])
+                        memory["keyword_cache"][kw_lower] = kw_id
+                        user_kw_ids.append(kw_id)
+
+        # 3. Rinnakkain: recommendations + (ref keywords → discover)
+        primary_genre_id = ref_genre_ids[0] if ref_genre_ids else None
+        recs_response, (disc, ref_kw_names) = await asyncio.gather(
             client.get(
                 f"{TMDB_BASE}/{ref_type}/{ref_id}/recommendations",
-                params={"api_key": TMDB_API_KEY, "language": "fi"},
+                params={"api_key": TMDB_API_KEY, "language": "fi", "include_adult": True},
             ),
-            client.get(
-                f"{TMDB_BASE}/discover/{ref_type}",
-                params={
-                    "api_key": TMDB_API_KEY,
-                    "language": "fi",
-                    "with_original_language": ref_lang or "",
-                    "with_genres": "|".join(str(gid) for gid in ref_genre_ids),
-                    "sort_by": "vote_average.desc",
-                    "vote_count.gte": 200,
-                    "include_adult": False,
-                },
-            ),
+            _fetch_keyword_discover(client, ref_id, ref_lang, primary_genre_id, user_kw_ids),
         )
 
-    recs = rec_r.json().get("results", [])
-    disc = disc_r.json().get("results", [])
+    recs = recs_response.json().get("results", [])
 
-    # 3. Yhdistä, poista duplikaatit ja referenssiteos itse
+    # 4. Yhdistä laaja kandidaattijoukko (disc ensin, recs täydentää)
+    order = (disc + recs) if disc else (recs + disc)
     seen = {ref_id}
-    combined = []
-    for item in recs + disc:
+    candidates = []
+    for item in order:
         item_id = item.get("id")
         if item_id and item_id not in seen:
             seen.add(item_id)
-            combined.append(item)
+            candidates.append(item)
 
-    combined.sort(key=lambda x: x.get("vote_average", 0), reverse=True)
-    top = combined[:15]
-
-    if not top:
+    if not candidates:
         return f"Ei löydy samankaltaisia teoksia: '{ref_name}'"
+
+    # 5. LLM rerankaa: referenssin kuvaus + teemat → valitaan parhaiten sopivat
+    ref_overview = ref.get("overview", "")
+    ranked_ids = await rerank_candidates(
+        ref_name=ref_name,
+        ref_overview=ref_overview,
+        ref_kw_names=ref_kw_names,
+        user_keywords=intent.keywords,
+        candidates=candidates[:30],  # max 30 kandidaattia Geminille
+    )
+
+    # Järjestetään kandidaatit Geminin suosittelemaan järjestykseen
+    id_to_item = {item["id"]: item for item in candidates}
+    top = [id_to_item[rid] for rid in ranked_ids if rid in id_to_item]
+
+    # Fallback: jos rerankaus epäonnistuu, käytetään alkuperäistä järjestystä
+    if not top:
+        top = candidates[:12]
 
     genre_list = memory["tv_genres"] if ref_type == "tv" else memory["movie_genres"]
     genre_map = {g["id"]: g["name"] for g in genre_list}

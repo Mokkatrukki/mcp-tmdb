@@ -160,6 +160,54 @@ def _postprocess(intent: SmartSearchIntent, query: str = "") -> SmartSearchInten
     return SmartSearchIntent(**data)
 
 
+class _RerankedIds(BaseModel):
+    ids: list[int]
+
+
+async def rerank_candidates(
+    ref_name: str,
+    ref_overview: str,
+    ref_kw_names: list[str],
+    user_keywords: list[str] | None,
+    candidates: list[dict],
+) -> list[int]:
+    """Käytä Geminiä valitsemaan temaattisesti parhaiten sopivat kandidaatit."""
+    if not candidates:
+        return []
+
+    cand_lines = "\n".join(
+        f"[{c['id']}] {c.get('name') or c.get('title', '?')} "
+        f"({(c.get('first_air_date') or c.get('release_date', ''))[:4]}) "
+        f"- {c.get('overview', '')[:150]}"
+        for c in candidates
+    )
+    user_kw_str = f"\nKäyttäjä painottaa erityisesti: {', '.join(user_keywords)}" if user_keywords else ""
+
+    prompt = f"""Olet elokuvasuositin. Referenssiteos:
+Nimi: {ref_name}
+Kuvaus: {ref_overview[:400]}
+Teemat: {', '.join(ref_kw_names) or '-'}{user_kw_str}
+
+Valitse alla olevista kandidaateista enintään 12 temaattisesti parhaiten sopivaa.
+Suosi teoksia jotka jakavat saman tunnelman, teemat tai tarinaelementit referenssin kanssa.
+Palauta lista ID-numeroista parhaimmasta huonoimpaan.
+
+Kandidaatit:
+{cand_lines}"""
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_RerankedIds,
+        ),
+    )
+    result = _RerankedIds.model_validate_json(response.text)
+    return result.ids
+
+
 async def classify_query(query: str, memory: dict) -> SmartSearchIntent:
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = _build_prompt(query, memory)

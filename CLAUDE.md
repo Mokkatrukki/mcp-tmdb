@@ -68,9 +68,16 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 
 **smart_search -polut:**
 - `discover` / `both_types` — suodatushaku (myös movie+tv rinnakkain)
-- `similar_to` — recommendations + discover rinnakkain → merge → lajittelu
+- `similar_to` — 3-vaiheinen: (1) hae referenssiteos, (2) rinnakkain recommendations + ref-keywordit → discover, (3) Gemini rerankaa top 12
 - `lookup` / `person` / `trending` — delegointi suoraan MCP-funktiolle
 - `airing_now` — season-rajat lasketaan automaattisesti
+
+**similar_to — keskeiset yksityiskohdat:**
+- `include_adult=True` — adult-sisältö mukaan (tärkeä esim. seinen-anime)
+- ref-keywordit haetaan TMDB:stä, generiset suodatetaan (_SKIP_KW)
+- user-keywordit + ref-keywordit yhdistetään OR-discover-kutsuun
+- Gemini (kutsu #2) valitsee 30 kandidaatista temaattisesti sopivimmat
+- Hallusinointiriski minimoitu: Gemini valitsee vain TMDB-haettujen joukosta
 
 Dokumentaatio: `FLOWS.md`
 
