@@ -54,6 +54,7 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - `get_person` — henkilön tiedot + roolit (append_to_response)
 - `discover` — suodatushaku: genre (FI-nimet), keywords, vuosi, arvosana, kesto, kieli, watch_provider
 - `get_recommendations` — suositukset id:n perusteella
+- `get_keywords` — elokuvan/sarjan keywordit id:llä (lisää cacheen samalla)
 - `trending` — trendaavat (movie/tv/all, day/week)
 - `list_genres` — genret (FI)
 - `list_certifications` — ikärajat (FI)

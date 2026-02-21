@@ -68,11 +68,167 @@ Käyttäjä / LLM       MCP Server
 
 ---
 
-## Tulossa — Taso 2 (smart_search)
+## Taso 2 — smart_search
 
-LLM tulkitsee luonnollisen kielen → Discover API -parametrit → tulokset.
+Luonnollinen kieli → Gemini tulkitsee intent → route → TMDB.
+Lähes kaikki "lista"-haut päätyvät **discover**-terminaaliin.
 
-*(dokumentoidaan kun toteutetaan)*
+---
+
+### Päärakenne
+
+```
+┌─────────────────────────────────┐
+│      smart_search(query)        │
+└────────────────┬────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────┐
+│         Gemini Flash            │
+│  intent + parametrit (JSON)     │
+└──────┬──────────────────┬───────┘
+       │ confidence=high  │ confidence=low
+       ▼                  ▼
+┌─────────────┐    ┌──────────────────────┐
+│   Router    │    │  low_confidence      │
+│  (ks. alla) │    │  + suggested_prompts │
+└─────────────┘    └──────────────────────┘
+```
+
+---
+
+### Reitti 1: Discover (tavoite ~80% kyselyistä)
+
+Terminaali: `discover()`
+
+```
+┌────────────────────────────────┐
+│  "Löydä 90-luvun noir-         │
+│   trillereita"                 │
+└──────────────┬─────────────────┘
+               │
+               ▼
+┌────────────────────────────────┐
+│  Gemini                        │
+│  genres: [trilleri]            │
+│  keywords: [noir]  ← resolv.   │
+│  year: 1990–1999               │
+│  type: movie                   │
+└──────────────┬─────────────────┘
+               │ keywords tarvitsee ID:t
+               ▼
+┌────────────────────────────────┐   ┌─────────────────┐
+│  /search/keyword?query=noir    │──▶│  keyword_id: 42 │
+└────────────────────────────────┘   └────────┬────────┘
+                                              │
+               ┌──────────────────────────────┘
+               ▼
+┌────────────────────────────────┐
+│  discover(                     │
+│    genres=[trilleri],          │
+│    with_keywords=[42],         │
+│    year=1990–1999              │
+│  )                             │
+└──────────────┬─────────────────┘
+               │
+               ▼
+         [tuloslista]
+```
+
+Huom: keywords ovat TMDB:ssä ID-pohjaisia, joten ne pitää resolvoida
+ennen discoveria. Genret ovat jo muistissa (startup-muisti).
+
+---
+
+### Reitti 2: Discover + henkilö (esim. "Tom Hanksin musikaalit")
+
+Terminaali: `discover()` — mutta vaatii ensin henkilön resolvoinnin.
+
+```
+┌────────────────────────────────┐
+│  "Tom Hanksin musikaalit"      │
+└──────────────┬─────────────────┘
+               │
+               ▼
+┌────────────────────────────────┐
+│  Gemini                        │
+│  intent: discover              │
+│  person: "Tom Hanks"  ← resolv.│
+│  genres: [musiikki]            │
+│  type: movie                   │
+└──────┬────────────────┬────────┘
+       │                │
+       ▼                ▼
+┌─────────────┐  ┌─────────────────┐
+│ search_     │  │ /search/keyword │
+│ person(     │  │ (jos tarvitaan) │
+│ "Tom Hanks")│  └────────┬────────┘
+└──────┬──────┘           │
+       │ person_id: 31    │
+       └────────┬─────────┘
+                ▼
+┌────────────────────────────────┐
+│  discover(                     │
+│    with_cast=31,               │
+│    genres=[musiikki]           │
+│  )                             │
+└──────────────┬─────────────────┘
+               │
+               ▼
+         [tuloslista]
+```
+
+---
+
+### Low confidence
+
+```
+┌────────────────────────────────┐
+│  "jotain ihan siistiä"         │
+└──────────────┬─────────────────┘
+               │
+               ▼
+┌────────────────────────────────┐
+│  Gemini: confidence=low        │
+└──────────────┬─────────────────┘
+               │
+               ▼
+┌────────────────────────────────────────────────────┐
+│  {                                                 │
+│    success: false,                                 │
+│    reason: "low_confidence",                       │
+│    suggested_prompts: [                            │
+│      "Etsi toimintaelokuvia 90-luvulta",           │
+│      "Kerro elokuvasta Inception",                 │
+│      "Kuka on Christopher Nolan?",                 │
+│      "Suosittele jotain kuten Interstellar",        │
+│      "Mitä sarjoja trendaa nyt?"                   │
+│    ]                                               │
+│  }                                                 │
+└────────────────────────────────────────────────────┘
+```
+
+Claude voi tarttua listaan ja ohjata keskustelun eteenpäin.
+
+---
+
+### Muut reitit (toteutetaan myöhemmin)
+
+```
+lookup          → search_by_title → get_details
+person          → search_person → get_person
+recommendations → search_by_title → get_recommendations
+trending        → trending
+```
+
+---
+
+### Huomioita
+
+- `min_rating` vain jos käyttäjä eksplisiittisesti pyytää ("parhaiten arvosteltuja")
+- `type` (movie/tv) päätellään kontekstista, default: movie
+- Gemini palauttaa aina validia JSONia (response_schema)
+- Loki: `{query, intent, params, result_count, confidence}` → search.log.jsonl
 
 ---
 

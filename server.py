@@ -17,6 +17,7 @@ memory: dict = {
     "tv_certifications": [],     # FI-sertifikaatit
     "movie_providers": [],  # FI-suoratoistopalvelut [{provider_id, provider_name}]
     "tv_providers": [],     # FI-suoratoistopalvelut
+    "keyword_cache": {},  # kasvava cache: "noir" → "53"
 }
 
 
@@ -300,13 +301,19 @@ async def discover(
         async with httpx.AsyncClient() as client:
             kw_ids = []
             for kw in keywords:
-                r = await client.get(
-                    f"{TMDB_BASE}/search/keyword",
-                    params={"api_key": TMDB_API_KEY, "query": kw},
-                )
-                results_kw = r.json().get("results", [])
-                if results_kw:
-                    kw_ids.append(str(results_kw[0]["id"]))
+                kw_lower = kw.lower()
+                if kw_lower in memory["keyword_cache"]:
+                    kw_ids.append(memory["keyword_cache"][kw_lower])
+                else:
+                    r = await client.get(
+                        f"{TMDB_BASE}/search/keyword",
+                        params={"api_key": TMDB_API_KEY, "query": kw},
+                    )
+                    results_kw = r.json().get("results", [])
+                    if results_kw:
+                        kw_id = str(results_kw[0]["id"])
+                        memory["keyword_cache"][kw_lower] = kw_id
+                        kw_ids.append(kw_id)
             if kw_ids:
                 params["with_keywords"] = "|".join(kw_ids)
 
@@ -677,6 +684,41 @@ async def get_recommendations(id: int, type: str = "movie") -> str:
         )
 
     return "\n\n".join(lines)
+
+
+@mcp.tool()
+async def get_keywords(id: int, type: str = "movie") -> str:
+    """
+    Hae elokuvan tai sarjan keywordit TMDB-id:llä.
+    id: TMDB-id (saadaan search_by_title- tai get_details-hausta)
+    type: 'movie' tai 'tv'
+    """
+    if type == "movie":
+        endpoint = f"/movie/{id}/keywords"
+        field = "keywords"
+    else:
+        endpoint = f"/tv/{id}/keywords"
+        field = "results"
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{TMDB_BASE}{endpoint}", params={"api_key": TMDB_API_KEY})
+        r.raise_for_status()
+        data = r.json()
+
+    keywords = data.get(field, [])
+    if not keywords:
+        return "Ei keywordejä."
+
+    # Lisätään cacheen samalla
+    for kw in keywords:
+        name = kw.get("name", "").lower()
+        kw_id = str(kw.get("id", ""))
+        if name and kw_id:
+            memory["keyword_cache"][name] = kw_id
+
+    lines = [f"Keywordit ({len(keywords)} kpl):"]
+    lines += [f"  [{kw['id']}] {kw['name']}" for kw in keywords]
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
