@@ -1,18 +1,16 @@
+import asyncio
+import datetime
 from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 import httpx
 
 from search.memory import memory, load_memory, TMDB_API_KEY, TMDB_BASE
-from search.graph import build_graph
-
-_search_graph = None
+from search.prompts import classify_query, SmartSearchIntent
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global _search_graph
     await load_memory()
-    _search_graph = build_graph()
     yield
 
 
@@ -695,6 +693,86 @@ async def get_keywords(id: int, type: str = "movie") -> str:
     return "\n".join(lines)
 
 
+async def _similar_to(intent: SmartSearchIntent) -> str:
+    """Hae teoksia jotka ovat samankaltaisia kuin referenssiteos."""
+    ref_type = intent.media_type
+
+    async with httpx.AsyncClient() as client:
+        # 1. Hae referenssiteos
+        r = await client.get(
+            f"{TMDB_BASE}/search/{ref_type}",
+            params={"api_key": TMDB_API_KEY, "query": intent.reference_title, "language": "fi", "include_adult": False},
+        )
+        results = r.json().get("results", [])
+        if not results:
+            return f"Ei löydy referenssiteosta: '{intent.reference_title}'"
+
+        ref = results[0]
+        ref_id = ref["id"]
+        ref_lang = ref.get("original_language")
+        ref_genre_ids = ref.get("genre_ids", [])
+        ref_name = ref.get("name") or ref.get("title", "?")
+
+        # 2. Hae suositukset ja discover rinnakkain
+        rec_r, disc_r = await asyncio.gather(
+            client.get(
+                f"{TMDB_BASE}/{ref_type}/{ref_id}/recommendations",
+                params={"api_key": TMDB_API_KEY, "language": "fi"},
+            ),
+            client.get(
+                f"{TMDB_BASE}/discover/{ref_type}",
+                params={
+                    "api_key": TMDB_API_KEY,
+                    "language": "fi",
+                    "with_original_language": ref_lang or "",
+                    "with_genres": "|".join(str(gid) for gid in ref_genre_ids),
+                    "sort_by": "vote_average.desc",
+                    "vote_count.gte": 200,
+                    "include_adult": False,
+                },
+            ),
+        )
+
+    recs = rec_r.json().get("results", [])
+    disc = disc_r.json().get("results", [])
+
+    # 3. Yhdistä, poista duplikaatit ja referenssiteos itse
+    seen = {ref_id}
+    combined = []
+    for item in recs + disc:
+        item_id = item.get("id")
+        if item_id and item_id not in seen:
+            seen.add(item_id)
+            combined.append(item)
+
+    combined.sort(key=lambda x: x.get("vote_average", 0), reverse=True)
+    top = combined[:15]
+
+    if not top:
+        return f"Ei löydy samankaltaisia teoksia: '{ref_name}'"
+
+    genre_list = memory["tv_genres"] if ref_type == "tv" else memory["movie_genres"]
+    genre_map = {g["id"]: g["name"] for g in genre_list}
+
+    lines = [f"Samankaltaisia kuin '{ref_name}':\n"]
+    for item in top:
+        title = item.get("name") or item.get("title", "?")
+        original = item.get("original_name") or item.get("original_title", "")
+        date = (item.get("first_air_date") or item.get("release_date", ""))[:4]
+        name_str = title if title == original or not original else f"{title} ({original})"
+        genre_names = [genre_map.get(gid, str(gid)) for gid in item.get("genre_ids", [])]
+        vote = item.get("vote_average", 0)
+        votes = item.get("vote_count", 0)
+        overview = item.get("overview", "")[:150]
+        lines.append(
+            f"[{item.get('id')}] {name_str} ({date})\n"
+            f"  Genret: {', '.join(genre_names) or '-'} | {vote:.1f}/10 ({votes} ääntä)\n"
+            f"  {overview}"
+        )
+
+    return "\n\n".join(lines)
+
+
 @mcp.tool()
 async def smart_search(query: str) -> str:
     """
@@ -702,14 +780,73 @@ async def smart_search(query: str) -> str:
     Tulkitsee kyselyn automaattisesti ja reitittää oikeaan hakuun.
     query: hakukysely suomeksi tai englanniksi
     """
-    if _search_graph is None:
-        return "Virhe: hakugraafi ei ole alustettu."
-
     try:
-        result = await _search_graph.ainvoke({"query": query})
-        return result.get("final_result") or result.get("discover_result") or "Ei tuloksia."
+        intent = await classify_query(query, memory)
     except Exception as e:
-        return f"Virhe hakua suorittaessa: {e}"
+        return f"Virhe kyselyn tulkinnassa: {e}"
+
+    match intent.intent:
+        case "low_confidence":
+            return (
+                "En ymmärtänyt kyselyä tarpeeksi hyvin.\n"
+                "Kokeile esimerkiksi:\n"
+                "  • 'toimintaelokuvia 90-luvulta'\n"
+                "  • 'jotain kuten Inception'\n"
+                "  • 'mitä sarjoja trendaa tällä viikolla'"
+            )
+        case "trending":
+            return await trending(type=intent.media_type, time_window=intent.time_window)
+        case "person":
+            return await search_person(intent.person_name or intent.name or query)
+        case "lookup":
+            return await search_by_title(intent.title or intent.name or query, intent.media_type)
+        case "similar_to":
+            return await _similar_to(intent)
+        case _:  # discover (+ both_types + airing_now)
+            date_gte = None
+            date_lte = None
+            if intent.airing_now:
+                today = datetime.date.today()
+                y, m = today.year, today.month
+                if m <= 3:
+                    date_gte, date_lte = f"{y}-01-01", f"{y}-03-31"
+                elif m <= 6:
+                    date_gte, date_lte = f"{y}-04-01", f"{y}-06-30"
+                elif m <= 9:
+                    date_gte, date_lte = f"{y}-07-01", f"{y}-09-30"
+                else:
+                    date_gte, date_lte = f"{y}-10-01", f"{y}-12-31"
+
+            if intent.both_types:
+                movie_res, tv_res = await asyncio.gather(
+                    discover(type="movie", genres=intent.genres, keywords=intent.keywords,
+                             year=intent.year, min_rating=intent.min_rating, min_votes=intent.min_votes,
+                             sort_by=intent.sort_by, language=intent.language,
+                             watch_provider=intent.watch_provider,
+                             year_from=intent.year_from, year_to=intent.year_to),
+                    discover(type="tv", genres=intent.genres, keywords=intent.keywords,
+                             year=intent.year, min_rating=intent.min_rating, min_votes=intent.min_votes,
+                             sort_by=intent.sort_by, language=intent.language,
+                             watch_provider=intent.watch_provider,
+                             year_from=intent.year_from, year_to=intent.year_to),
+                )
+                return f"## Elokuvat\n\n{movie_res}\n\n## Sarjat\n\n{tv_res}"
+
+            return await discover(
+                type=intent.media_type,
+                genres=intent.genres,
+                keywords=intent.keywords,
+                year=intent.year,
+                min_rating=intent.min_rating,
+                min_votes=intent.min_votes,
+                sort_by=intent.sort_by,
+                language=intent.language,
+                watch_provider=intent.watch_provider,
+                year_from=intent.year_from,
+                year_to=intent.year_to,
+                date_gte=date_gte,
+                date_lte=date_lte,
+            )
 
 
 if __name__ == "__main__":

@@ -19,7 +19,12 @@ Kutsuketjut: `FLOWS.md`
 ## Projektirakenne
 
 ```
-server.py        ← MCP-palvelimen pääpiste (FastMCP)
+server.py        ← MCP-palvelimen pääpiste (FastMCP) + kaikki työkalut
+search/
+  memory.py      ← startup-muisti (genret, palvelut, keyword-cache)
+  prompts.py     ← classify_query() + SmartSearchIntent (Gemini)
+data/
+  keywords.json  ← TMDB keyword-id:t, verifioitu manuaalisesti
 pyproject.toml   ← riippuvuudet
 .env             ← TMDB_API_KEY (ei versionhallintaan)
 .mcp.json        ← Claude Code MCP -yhteys
@@ -42,9 +47,9 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 ## Missä ollaan nyt
 
 **Tehty:**
-- Projektirakenne: `pyproject.toml`, `.env`, `.mcp.json`, GitHub-repo
-- Startup-muisti: genret (FI), sertifikaatit (FI), watch providers (FI)
-- 11 työkalua käytössä (ks. alla)
+- 12 MCP-työkalua (`server.py`)
+- `smart_search` — Gemini tulkitsee kyselyn → if/elif-reititys oikeaan funktioon
+- `_similar_to` — rinnakkain recommendations + discover → yhdistä + lajittele
 
 **Työkalut:**
 - `search_by_title` — nimihaku (elokuva/sarja)
@@ -54,27 +59,20 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - `get_person` — henkilön tiedot + roolit (append_to_response)
 - `discover` — suodatushaku: genre (FI-nimet), keywords, vuosi, arvosana, kesto, kieli, watch_provider
 - `get_recommendations` — suositukset id:n perusteella
-- `get_keywords` — elokuvan/sarjan keywordit id:llä (lisää cacheen samalla)
+- `get_keywords` — teoksen keywordit id:llä (lisää cacheen samalla)
 - `trending` — trendaavat (movie/tv/all, day/week)
 - `list_genres` — genret (FI)
 - `list_certifications` — ikärajat (FI)
 - `list_watch_providers` — suoratoistopalvelut (FI)
-
-- `smart_search` — LangGraph-pohjainen älykäs haku (12 solmua, ehdolliset polut)
-
-**Arkkitehtuuri:**
-- `search/` — modulaarinen paketti: memory, state, prompts, nodes, graph
-- `data/keywords.json` — verifioitu TMDB-keyword-kartta ID:ineen
-- `tests/test_prompt.py` — 21 promptin yleistymistestiä (21/21 läpi)
+- `smart_search` — Gemini-pohjainen älykäs haku (ei LangGraph)
 
 **smart_search -polut:**
-- `discover` / `both_types` — suodatushaku (myös movie+tv yhdistettynä)
-- `similar_to` — referenssiteos → keywords + suositukset + discover + merge
-- `lookup` / `person` / `trending` — suorat haut
-- `airing_now` — nykyinen season-alue automaattisesti
-- `year_from/year_to` — aikavälit (ei vain yksittäinen vuosi)
+- `discover` / `both_types` — suodatushaku (myös movie+tv rinnakkain)
+- `similar_to` — recommendations + discover rinnakkain → merge → lajittelu
+- `lookup` / `person` / `trending` — delegointi suoraan MCP-funktiolle
+- `airing_now` — season-rajat lasketaan automaattisesti
 
-Dokumentaatio: `FLOWS.md`, `TMDB_API.md`
+Dokumentaatio: `FLOWS.md`
 
 ## Komennot
 
