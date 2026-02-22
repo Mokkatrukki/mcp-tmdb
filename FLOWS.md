@@ -2,7 +2,6 @@
 
 > Iso idea: käyttäjä kirjoittaa luonnollista kieltä.
 > Järjestelmä ajattelee. TMDB hakee. Vastaus tulee takaisin.
-> Yksinkertainen. Mutta alla on kerroksia.
 
 ---
 
@@ -12,7 +11,7 @@
 server.py          ← MCP-palvelin + kaikki työkalut + smart_search-reititys
 search/
   memory.py        ← käynnistysmuisti (genret, palvelut, keyword-cache)
-  prompts.py       ← classify_query() + rerank_candidates() + Pydantic-mallit
+  prompts.py       ← classify_query() + rerank_candidates() + rerank_by_criteria()
 data/
   keywords.json    ← TMDB keyword-id:t, verifioitu manuaalisesti
 ```
@@ -26,20 +25,20 @@ data/
 │                    MCP-työkalut                         │
 │                                                         │
 │  SUORAT — ohut kuori TMDB:n päälle, ei ajattelua       │
-│  ┌──────────────────┬──────────────────────────────┐   │
-│  │ search_by_title  │ nimihaku (elokuva / sarja)   │   │
-│  │ search_multi     │ nimihaku kaikki tyypit        │   │
-│  │ search_person    │ henkilöhaku                  │   │
-│  │ get_details      │ tiedot TMDB-id:llä           │   │
-│  │ get_person       │ henkilö + roolit             │   │
-│  │ get_keywords     │ teoksen keywordit            │   │
-│  │ get_recommendations │ TMDB:n suositukset       │   │
-│  │ trending         │ trendaavat nyt               │   │
-│  │ discover         │ suodatushaku                 │   │
-│  │ list_genres      │ genret muistista (FI)        │   │
-│  │ list_certifications │ ikärajat (FI)            │   │
-│  │ list_watch_providers │ suoratoistopalvelut     │   │
-│  └──────────────────┴──────────────────────────────┘   │
+│  ┌──────────────────────┬────────────────────────────┐  │
+│  │ search_by_title      │ nimihaku (elokuva / sarja) │  │
+│  │ search_multi         │ nimihaku kaikki tyypit     │  │
+│  │ search_person        │ henkilöhaku                │  │
+│  │ get_details          │ tiedot + kokoelma-osat     │  │
+│  │ get_person           │ henkilö + roolit           │  │
+│  │ get_keywords         │ teoksen keywordit          │  │
+│  │ get_recommendations  │ TMDB:n suositukset         │  │
+│  │ trending             │ trendaavat nyt             │  │
+│  │ discover             │ suodatushaku               │  │
+│  │ list_genres          │ genret muistista (FI)      │  │
+│  │ list_certifications  │ ikärajat (FI)              │  │
+│  │ list_watch_providers │ suoratoistopalvelut        │  │
+│  └──────────────────────┴────────────────────────────┘  │
 │                                                         │
 │  ÄLYKÄS — ainoa työkalu joka ajattelee                 │
 │  ┌──────────────────────────────────────────────────┐   │
@@ -56,274 +55,303 @@ data/
 käyttäjä kirjoittaa kyselyn
          │
          ▼
-  ┌─────────────────────────────────────┐
-  │         classify_query()            │
-  │                                     │
-  │  Gemini lukee:                      │
-  │  · kyselyn                          │
-  │  · kaikki käytettävissä olevat      │
-  │    genret (FI)                      │
-  │  · suoratoistopalvelut (FI)         │
-  │  · tämän päivän päivämäärä          │
-  │                                     │
-  │  Palauttaa: SmartSearchIntent       │
-  └──────────────┬──────────────────────┘
+  ┌──────────────────────────────────┐
+  │        classify_query()          │
+  │                                  │
+  │  Gemini lukee:                   │
+  │  · kyselyn                       │
+  │  · genret (FI)                   │
+  │  · suoratoistopalvelut (FI)      │
+  │  · tämän päivän päivämäärä       │
+  │                                  │
+  │  Palauttaa: SmartSearchIntent    │
+  └──────────────┬───────────────────┘
+                 │
+         _postprocess()   ← deterministiset korjaussäännöt
                  │
          intent? │
-         ┌───────┴────────┐
-         │                │
-    ─────┼─────────────────┼──────────────────────
-    trending  person  lookup  discover  similar_to
-         │        │       │        │         │
-      trending() │  search_ discover()  _similar_to()
-                 │  by_title()         (ks. alla)
-            search_
-            person()
+                 ▼
+   ┌─────────────────────────────────────────────────┐
+   │ franchise  → _franchise_search()               │
+   │ discover   → discover() [+ actor_name-resolvaus│
+   │              + watch_providers-looppi]         │
+   │ similar_to → _similar_to()                     │
+   │ lookup     → search_by_title()                 │
+   │ person     → search_person()                   │
+   │ trending   → trending()                        │
+   └─────────────────────────────────────────────────┘
 ```
 
 ---
 
-## classify_query() — mitä promptissa lukee
-
-Gemini saa noin 130 riviä ohjeita. Tässä tiivistelmä:
-
-### Intent — mistä Gemini tunnistaa tarkoituksen
+## Intentin tunnistaminen — mistä Gemini tietää mitä käyttäjä haluaa
 
 ```
-INTENT          TUNNISTAA TÄSTÄ
-─────────────────────────────────────────────────────
-discover      · tyylin/tunnelman kuvailu ilman nimeä
-              · genreviittaus ("suomalainen draama")
-              · aikaväli, kieliviittaus
+INTENT       MILLOIN                          ESIMERKKI
+──────────────────────────────────────────────────────────────
+franchise  · franchise-nimi + kriteeri        "parhaat Gundam-sarjat"
+           · ei yhtä tiettyä teosta           "tummimmat Star Wars -elokuvat"
 
-similar_to    · teos mainitaan VERTAILUNA, ei kohteena
-              · "kuten X", "X tyylinen", "enemmän kuin X"
-              · → asettaa reference_title
+discover   · genre/tunnelma ilman nimeä       "suomalaisia draamoja 90-luvulta"
+           · näyttelijä + kriteeri            "Tom Hanksin sotaelokuvat"
+           · watch_provider mainittu          "Netflix-sarjoja 2020-luvulta"
 
-lookup        · yksi nimetty teos, "kerro", "mikä on"
+similar_to · teos mainitaan VERTAILUNA        "samanlaisia kuin Inception"
+           · "kuten X", "X tyylinen"          "enemmän Sopranos-henkistä"
 
-person        · henkilönimi, "kuka on"
+lookup     · yksi nimetty teos               "kerro Blade Runnerista"
+           · "kerro", "mikä on"              "mikä on Breaking Bad"
 
-trending      · "trendaa", "mitä katsotaan nyt"
-```
+person     · henkilönimi YKSIN               "kuka on Tom Hanks"
+           · ei genre/vuosi-filttereitä      "kerro Meryl Streepistä"
+           (jos filttereitä → discover!)
 
-### Kieli — automaattinen päättely
-
-```
-"anime" missä tahansa muodossa  →  language="ja" + genres=["Animaatio"]
-"isekai"                        →  language="ja" + keywords=["isekai", "parallel world"]
-"k-drama", "korealainen"        →  language="ko"
-"bollywood", "intialainen"      →  language="hi"
-```
-
-### Tyylit → keywords (TMDB-englanniksi)
-
-```
-"synkkä", "dark"       →  "dark fantasy"
-"kosto"                →  "revenge"
-"gore", "brutaali"     →  "gore"
-"psykologinen"         →  "psychological"
-"aikamatka"            →  "time travel"
-"cyberpunk"            →  "cyberpunk"
-"dystopia"             →  "dystopia"
-```
-
-### Laatu ja järjestys
-
-```
-"paras", "klassikko"   →  sort_by=vote_average.desc, min_votes=500
-"uusin"                →  sort_by=release_date.desc
-"trendaa"              →  sort_by=popularity.desc
+trending   · "trendaa", "mitä katsotaan nyt" "mitä elokuvia trendaa"
 ```
 
 ---
 
-## _similar_to() — kolmivaiheinen prosessi
+## _postprocess() — Geminin jälkeen tehtävät automaattiset korjaukset
 
-Tässä tapahtuu eniten. Referenssiteos toimii ankkurina.
+Gemini voi tehdä virheitä. Tämä funktio korjaa deterministisesti:
+
+```
+Sääntö                                   Korjaus
+─────────────────────────────────────────────────────────────
+airing_now=true                        → media_type="tv"
+                                         (sarjat airoavat, elokuvat eivät)
+
+genres=["Animaatio"] ilman kieltä      → language="ja"
+                                         (animaatio on japani oletuksena)
+
+"anime/isekai/seinen" kyselyssä        → language="ja" + genres=["Animaatio"]
+
+franchise_query asetettu + "sarj*"     → media_type="tv"
+kyselyssä                                (Gemini voi sekoittaa elokuva/sarja)
+```
+
+---
+
+## discover-polku
+
+Yksinkertaisin polku — yksi tai useampi API-kutsu:
+
+```
+intent.genres        →  genre-ID:t muistista (FI-nimet → ID:t)
+intent.keywords      →  keyword-ID:t cachesta tai TMDB-hausta
+intent.language      →  with_original_language
+intent.actor_name    →  /search/person → with_cast ID
+intent.watch_providers → with_watch_providers + watch_region=FI
+                              │
+                              ▼
+                 /discover/movie  tai  /discover/tv
+                              │
+                              ▼
+                         tulokset
+```
+
+**Erityistapaukset:**
+
+`both_types=true` → kaksi discover-kutsua rinnakkain (movie + tv)
+
+`watch_providers` sisältää useita palveluja → yksi haku per palvelu,
+tulokset eri osioina:
+```
+## Yle Areena
+...
+## Amazon Prime Video
+...
+```
+
+`actor_name` → haetaan ensin henkilön TMDB-id → lisätään with_cast-filtteriksi:
+```
+"Tom Hanksin sotaelokuvat"
+  → actor_name="Tom Hanks"
+  → /search/person?query=Tom+Hanks → id=31
+  → /discover/movie?with_cast=31&with_genres=10752
+```
+
+---
+
+## franchise-polku
+
+Käytetään kun haetaan kaikki tietyn franchisen teokset + käyttäjän kriteeri
+(paras, tummin, suosituin jne.):
+
+```
+franchise_query="Gundam", media_type="tv"
+         │
+         ▼
+  Haetaan 2 sivua ilman kielirajoitusta (40 tulosta)
+  /search/tv?query=Gundam&page=1
+  /search/tv?query=Gundam&page=2   (rinnakkain)
+         │
+         ▼
+  Suodatetaan: poistetaan tulokset joiden nimessä ei ole "gundam"
+  (vältää täysin epäolennaiset)
+         │
+         ▼
+  rerank_by_criteria(query, kandidaatit[:30])
+  "parhaat vakavat tummat Gundam sarjat"
+         │
+         ▼
+  Gemini järjestää temaattisesti → top tulokset
+```
+
+**Miksi 2 sivua ilman kielirajoitusta?**
+TMDB:n hakutulokset vaihtelevat kielen mukaan. Japanilaiset sarjat
+(Gundam, Dragon Ball jne.) löytyvät paremmin ilman `language=fi`-rajoitusta.
+
+---
+
+## similar_to-polku — kolmivaiheinen
+
+Referenssiteos toimii ankkurina. Kolme vaihetta:
 
 ```
 VAIHE 1 — Hae referenssiteos
 ─────────────────────────────
-käyttäjä: "samanlaisia kuin Redo of Healer, gore, synkkä"
+"samanlaisia kuin Redo of Healer, gore, synkkä"
                 │
                 ▼
-     search/tv?query="Redo of Healer"
+     /search/tv?query="Redo of Healer"
                 │
                 ▼
      ref_id=99071, ref_lang="ja", ref_genre_ids=[16,...]
-     ref_overview="Parantajan poika..."
 
 
 VAIHE 2 — Rinnakkain (asyncio.gather)
 ──────────────────────────────────────
 
-   ┌──────────────────────┐    ┌──────────────────────────────────┐
-   │  /tv/99071/          │    │  _fetch_keyword_discover()       │
-   │  recommendations     │    │                                  │
-   │                      │    │  1. /tv/99071/keywords           │
-   │  TMDB:n oma lista    │    │     → [rape, revenge, gore,      │
-   │  "muut käyttäjät     │    │        mutilation, dark fantasy, │
-   │   katsoi myös..."    │    │        seinen, ...]              │
-   │                      │    │                                  │
-   │  ~20 tulosta         │    │  2. Suodatetaan generiset pois   │
-   │                      │    │     (anime, based on manga,      │
-   │                      │    │      magic, romance, adventure)  │
-   │                      │    │                                  │
-   │                      │    │  3. User-keywordit ensin +       │
-   │                      │    │     ref-keywordit → OR-lista     │
-   │                      │    │                                  │
-   │                      │    │  4. /discover/tv                 │
-   │                      │    │     ?with_keywords=570|9748|...  │
-   │                      │    │     &with_original_language=ja   │
-   │                      │    │     &include_adult=true          │
-   │                      │    │                                  │
-   │                      │    │  ~20 tulosta                     │
-   └──────────────────────┘    └──────────────────────────────────┘
+   ┌──────────────────────┐    ┌───────────────────────────────┐
+   │  /tv/99071/          │    │  _fetch_keyword_discover()    │
+   │  recommendations     │    │                               │
+   │                      │    │  1. /tv/99071/keywords        │
+   │  TMDB:n oma lista:   │    │     → [revenge, gore,         │
+   │  "muut katsoi myös"  │    │        dark fantasy, seinen]  │
+   │                      │    │                               │
+   │  ~20 tulosta         │    │  2. Poistetaan generiset:     │
+   │                      │    │     anime, based on manga,    │
+   │                      │    │     magic, romance, adventure │
+   │                      │    │                               │
+   │                      │    │  3. user-kw + ref-kw → OR    │
+   │                      │    │                               │
+   │                      │    │  4. /discover/tv              │
+   │                      │    │     ?with_keywords=X|Y|Z      │
+   │                      │    │     &with_original_language=ja│
+   │                      │    │     &include_adult=true       │
+   └──────────────────────┘    └───────────────────────────────┘
             │                               │
             └───────────────┬───────────────┘
                             │
-                   disc + recs yhdistetään
-                   duplikaatit poistetaan
-                   ~30 kandidaattia
+                 disc + recs yhdistetään
+                 duplikaatit poistetaan
+                 ~30 kandidaattia
 
 
 VAIHE 3 — LLM rerankaus (Gemini kutsu #2)
 ───────────────────────────────────────────
 
-  Geminille annetaan:
-
-  ┌──────────────────────────────────────────────────────┐
-  │  Referenssiteos: "回復術士のやり直し"                │
-  │  Kuvaus: "Parantaja joka käytetään hyväksi..."       │
-  │  Teemat: revenge, gore, mutilation, dark fantasy...  │
-  │  Käyttäjä painottaa: gore, dark fantasy              │
-  │                                                      │
-  │  Kandidaatit:                                        │
-  │  [35935] Berserk (1997) - 8.5/10 - Dark warrior...  │
-  │  [82591] Goblin Slayer (2018) - 8.0/10 - ...        │
-  │  [37854] One Piece (1999) - 8.7/10 - Merirosvot...  │
-  │  [97923] Sleepy Princess (2020) - 8.4/10 - ...      │
-  │  ... (max 30)                                        │
-  └──────────────────────────────────────────────────────┘
-                         │
-                         ▼
-              Gemini palauttaa: [35935, 82591, ...]
-              (ID:t parhaimmasta huonoimpaan)
-                         │
-                         ▼
-              Järjestetään kandidaatit → top 12
-              Palautetaan käyttäjälle
+  Geminille annetaan referenssiteoksen kuvaus + teemat + kandidaatit.
+  Gemini valitsee parhaiten sopivat ja järjestää ne.
+  Palautetaan top 12.
 ```
 
-### Miksi rerankaus on turvallista (eikä hallusinoi)
+**Jos watch_providers on asetettu:**
+Recommendations-vaihe ohitetaan kokonaan (TMDB ei tue platformifilttereitä
+recommendations-endpointissa). Sen sijaan ajetaan yksi discover per palvelu
+rinnakkain ja yhdistetään tulokset.
+
+---
+
+## get_details — kokoelmatuki elokuville
+
+Kun haet elokuvan tiedot, palvelin tarkistaa automaattisesti kuuluuko
+se kokoelmaan (esim. Blade Runner Collection, Star Wars Collection):
+
+```
+/movie/{id}
+    │
+    ├── belongs_to_collection.id löytyy?
+    │       │
+    │       ▼
+    │   /collection/{collection_id}
+    │       │
+    │       ▼
+    │   Kaikki kokoelman osat aikajärjestyksessä
+    │   "tämä" merkitään ◄
+    │
+    └── ei → ei lisätietoja
+```
+
+Esimerkki:
+```
+Blade Runner: The Final Cut (1982)
+...
+Osa kokoelmaa: Blade Runner Collection
+  Blade Runner: The Final Cut (1982) — 7.9/10 ◄ tämä
+  Blade Runner 2049 (2017) — 7.6/10
+```
+
+---
+
+## Miksi LLM-rerankaus on turvallinen ratkaisu
 
 ```
 ✓ TURVALLINEN:  Gemini valitsee TMDB:stä haettujen joukosta
-                → ei voi keksiä sarjoja joita ei ole
+                → ei voi keksiä teoksia joita ei ole
                 → vain järjestää ja suodattaa olemassaolevaa
 
 ✗ VAARALLINEN:  "Keksi 10 moottoripyöräanimen nimeä"
-                → LLM voisi keksiä sarjoja joita ei ole
-                → tai sekoittaa nimiä / vuosilukuja
+                → LLM voisi hallusinoida teoksia
                 → tätä EI käytetä
 ```
 
 ---
 
-## Discover-polku
-
-Yksinkertaisempi kuin similar_to — yksi API-kutsu:
-
-```
-intent.keywords  →  keyword-ID:t cachesta / TMDB-hausta
-intent.genres    →  genre-ID:t muistista (FI-nimet → ID:t)
-intent.language  →  with_original_language
-intent.min_votes →  vote_count.gte
-                         │
-                         ▼
-              /discover/movie   tai   /discover/tv
-                         │
-                         ▼
-                    tulokset suoraan
-```
-
-Erityistapaukset:
-- `both_types=true` → kaksi discover-kutsua rinnakkain (movie + tv), yhdistetään
-- `airing_now=true` → lasketaan automaattisesti season-aikaväli → `first_air_date.gte/lte`
-
----
-
 ## Startup-muisti (memory.py)
 
-Kerätään kerran kun palvelin käynnistyy. Pysyy muistissa.
+Kerätään kerran palvelimen käynnistyksessä, pysyy muistissa:
 
 ```
 käynnistys
-    │
-    ├── /genre/movie/list?language=fi   →  movie_genres  (19 genreä)
-    ├── /genre/tv/list?language=fi      →  tv_genres     (16 genreä)
-    ├── /certification/movie/list       →  movie_certs   (FI ikärajat)
-    ├── /certification/tv/list          →  tv_certs      (FI ikärajat)
-    └── /watch/providers/movie?region=FI →  providers    (62 palvelua)
-
-    + keyword_cache = {}   ← täyttyy ajonaikaisesti
+    ├── /genre/movie/list?language=fi    →  movie_genres  (19 genreä)
+    ├── /genre/tv/list?language=fi       →  tv_genres     (16 genreä)
+    ├── /certification/movie/list        →  movie_certs   (FI ikärajat)
+    ├── /certification/tv/list           →  tv_certs      (FI ikärajat)
+    ├── /watch/providers/movie?region=FI →  movie_providers
+    ├── /watch/providers/tv?region=FI    →  tv_providers
+    └── keyword_cache = {}               ← täyttyy ajonaikaisesti
 ```
 
-keyword_cache toimii näin:
+Keyword-cache toimii näin:
 ```
 1. käyttäjä pyytää "gore"-keywordiä
-2. cache tyhjä → haetaan /search/keyword?query=gore → id=10292
+2. cache tyhjä → /search/keyword?query=gore → id=10292
 3. tallennetaan: cache["gore"] = "10292"
-4. seuraava pyyntö: cache["gore"] löytyy → ei API-kutsua
+4. seuraava pyyntö → löytyy cachesta, ei API-kutsua
 ```
 
-get_keywords täyttää cachen sivutuotteena — kun haet teoksen keywordit,
-ne kaikki lisätään cacheen automaattisesti.
+`get_keywords` täyttää cachen sivutuotteena — teoksen keywordit
+lisätään automaattisesti.
 
 ---
 
 ## Tunnetut rajoitukset
 
 ```
-ONGELMA                          SYY                    RATKAISU
-───────────────────────────────────────────────────────────────────
-"anime jossa moottoripyöriä"   TMDB tägää harvoin      ei ratkaisua
-→ 4 tulosta, Akira puuttuu     ajoneuvoja keywords-     tällä hetkellä
-                                kentässä
+ONGELMA                        SYY                      TILANNE
+──────────────────────────────────────────────────────────────────
+"anime jossa moottoripyöriä"  TMDB tägää harvoin        ei ratkaisua
+→ Akira ei löydy              ajoneuvoja keywords-
+                               kentässä
 
-Discover palauttaa suosittuja  keyword OR-logiikka      rerank auttaa
-animeita geneeristen tagia     osuu laajasti            osittain
-kanssa (AoT on "gore")
+Näyttelijän TV-roolit         TMDB:n henkilöprofiilit   ei ratkaisua
+puuttuvat discover-hausta     ovat epätäydellisiä       tällä hetkellä
+(esim. Pamela Anderson /       (Baywatch TV puuttuu)
+Baywatch TV)
 
-Recommendations = ei sisältö-  TMDB käyttää metadata-  rerank korjaa
-pohjainen vaan metadata         ei katsojakokemusta
+Franchise-haku ei löydä       TMDB-haku ei indeksoi     osittainen:
+kaikkia osia jos franchise-   japanilaisia nimiä        2-sivu-haku
+nimi on vain japanissa        hyvin englanniksi          auttaa
 ```
-
----
-
-## Tänään rakennettu (2025-02-22)
-
-```
-ENNEN                          JÄLKEEN
-──────────────────────────────────────────────────────────
-include_adult=False            include_adult=True
-                               → adult-anime löytyy
-
-discover: kaikki genre-id:t   discover: vain primary genre
-OR-listana                     → vähemmän kohinaa
-
-keywords: ei käytetty          keywords: user_kw + ref_kw
-similar_to-haussa              OR-logiikalla → parempi
-
-recs ensin → sort vote_avg     disc ensin (temaattinen) →
-→ One Piece #1                 recs täydentää → ei re-sort
-
-ei rerankkausta                Gemini kutsu #2 rerankaa
-→ suosituimmat voittaa         30 kandidaatista → top 12
-                               → temaattisesti osuvat ensin
-```
-
----
-
-*Luettu ennen nukkumaanmenoa. Huomenna lisää.*
