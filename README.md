@@ -71,7 +71,7 @@ Hae elokuvan tiedot TMDB-id:llä. Jos elokuva kuuluu kokoelmaan
 ### 1. Kloonaa ja asenna riippuvuudet
 
 ```bash
-git clone https://github.com/sinun-käyttäjänimi/MCP-tmdb.git
+git clone https://github.com/Mokkatrukki/mcp-tmdb.git
 cd MCP-tmdb
 uv sync
 ```
