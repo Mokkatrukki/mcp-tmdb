@@ -3,7 +3,7 @@
     "tmdb": {
       "command": "uv",
       "args": ["run", "python", "server.py"],
-      "cwd": "/home/mokka/projektit/MCP-tmdb"
+      "cwd": "/POLKU/TÄHÄN/MCP-tmdb"
     }
   }
 }
