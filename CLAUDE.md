@@ -55,9 +55,9 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - `search_by_title` — nimihaku (elokuva/sarja)
 - `search_multi` — nimihaku kaikki tyypit kerralla
 - `search_person` — henkilöhaku
-- `get_details` — elokuvan/sarjan tiedot
+- `get_details` — elokuvan/sarjan tiedot; elokuville näyttää myös kokoelman muut osat (`/collection/{id}`)
 - `get_person` — henkilön tiedot + roolit (append_to_response)
-- `discover` — suodatushaku: genre (FI-nimet), keywords, vuosi, arvosana, kesto, kieli, watch_provider
+- `discover` — suodatushaku: genre (FI-nimet), keywords, vuosi, arvosana, kesto, kieli, watch_provider, with_cast
 - `get_recommendations` — suositukset id:n perusteella
 - `get_keywords` — teoksen keywordit id:llä (lisää cacheen samalla)
 - `trending` — trendaavat (movie/tv/all, day/week)
@@ -68,7 +68,12 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 
 **smart_search -polut:**
 - `discover` / `both_types` — suodatushaku (myös movie+tv rinnakkain)
+  - `actor_name` → resolvataan TMDB-id → `with_cast`-filtteri
+  - `watch_providers: list[str]` → useita palveluja tuettu (OR-logiikka, yksi osio per palvelu)
+- `franchise` — franchise-nimihaku: 2 sivua TMDB:stä ilman kielirajoitusta → Gemini rerankaa kriteerien mukaan
+  - `_postprocess`: "sarj*"-sana kyselyssä → pakottaa `media_type="tv"`
 - `similar_to` — 3-vaiheinen: (1) hae referenssiteos, (2) rinnakkain recommendations + ref-keywordit → discover, (3) Gemini rerankaa top 12
+  - `watch_providers` tuettu: ohittaa recommendations, ajaa rinnakkaiset discover-haut per palvelu
 - `lookup` / `person` / `trending` — delegointi suoraan MCP-funktiolle
 - `airing_now` — season-rajat lasketaan automaattisesti
 
@@ -78,6 +83,11 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - user-keywordit + ref-keywordit yhdistetään OR-discover-kutsuun
 - Gemini (kutsu #2) valitsee 30 kandidaatista temaattisesti sopivimmat
 - Hallusinointiriski minimoitu: Gemini valitsee vain TMDB-haettujen joukosta
+
+**prompts.py — funktiot:**
+- `classify_query()` — Gemini luokittelee kyselyn SmartSearchIntentiksi
+- `rerank_candidates()` — similar_to rerankaus referenssiteoksen mukaan
+- `rerank_by_criteria()` — franchise-hakuun, järjestää käyttäjän kriteerien mukaan ilman referenssiteosta
 
 Dokumentaatio: `FLOWS.md`
 

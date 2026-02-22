@@ -23,7 +23,7 @@ class SmartSearchIntent(BaseModel):
     year_to: int | None = None
     min_rating: float | None = None
     language: str | None = None
-    watch_provider: str | None = None
+    watch_providers: list[str] | None = None
     person_name: str | None = None
     title: str | None = None
     name: str | None = None
@@ -32,6 +32,8 @@ class SmartSearchIntent(BaseModel):
     min_votes: int = 100
     airing_now: bool = False
     both_types: bool = False
+    actor_name: str | None = None
+    franchise_query: str | None = None
 
 
 def _build_prompt(query: str, memory: dict) -> str:
@@ -50,11 +52,23 @@ Sarjagenret: {tv_genres}
 ## Suoratoistopalvelut (Suomi):
 {providers}
 
+watch_providers on lista palveluja. Yksi palvelu → ["Netflix"]. Useita ("tai"/"tai jommalla kummalla") → ["Yle Areena", "Amazon Prime Video"]. Käytä aina tarkkaa nimeä yllä olevasta listasta.
+
 ## Intent — valitse MITÄ käyttäjä haluaa, ei sanamuodosta:
+
+franchise:   Käyttäjä haluaa teoksia tietystä franchisesta/sarjasta nimellä +
+             valintakriteerin (paras, tummin, suosituin jne.).
+             Merkkejä: franchise-nimi + adjektiivi/kriteeri ilman yhtä tiettyä teosta.
+             Esimerkkejä: "parhaat Gundam-sarjat", "tummimmat Star Wars -elokuvat",
+             "suosituimmat Marvel-sarjat". → aseta franchise_query=<franchise-nimi>
 
 discover:    Lista teoksia annetuin kriteerein. Käyttäjä ei etsi yhtä tiettyä
              teosta vaan vaihtoehtoja. Merkkejä: tyylin/tunnelman kuvailu,
              genreviittaus, aikaväli, kieliviittaus ilman nimeä.
+             Jos kyselyssä on näyttelijän tai ohjaajan nimi + muita kriteerejä
+             (genre, vuosi, tyyli jne.) → discover + actor_name=<nimi>.
+             Esimerkkejä: "Tom Hanksin sotaelokuvat", "Nolan-elokuvat",
+             "Cate Blanchettin draamat 2010-luvulta".
 
 lookup:      Tiedot yhdestä nimetystä teoksesta. Merkkejä: "kerro", "mikä on",
              teoksen nimi ilman vertailuasetelmaa.
@@ -64,7 +78,9 @@ similar_to:  Teos mainitaan VERTAILUKOHTANA, ei kohteena.
              anna lisää", "enemmän kuin X", teos + pyyntö lisää samaa.
              → aseta reference_title
 
-person:      Tietoa henkilöstä. Merkkejä: "kuka on", henkilönimi yksin.
+person:      Tietoa henkilöstä — EI teoslistaa filtterein. Merkkejä: "kuka on",
+             henkilönimi YKSIN ilman muita kriteereitä, "kerro X:stä".
+             Jos henkilönimen lisäksi on genre/vuosi/muu kriteeri → discover.
 
 trending:    Suosio juuri nyt. Merkkejä: "trendaa", "mitä katsotaan nyt".
 
@@ -157,6 +173,11 @@ def _postprocess(intent: SmartSearchIntent, query: str = "") -> SmartSearchInten
             if not genres:
                 data["genres"] = ["Animaatio"]
 
+    # Franchise-haku: jos kyselyssä on sarjaviittaus → pakota tv
+    if data.get("franchise_query") and data.get("media_type") != "tv":
+        if _re.search(r'\bsarj[a-zäöå]*\b', query, _re.IGNORECASE):
+            data["media_type"] = "tv"
+
     return SmartSearchIntent(**data)
 
 
@@ -191,6 +212,39 @@ Teemat: {', '.join(ref_kw_names) or '-'}{user_kw_str}
 Valitse alla olevista kandidaateista enintään 12 temaattisesti parhaiten sopivaa.
 Suosi teoksia jotka jakavat saman tunnelman, teemat tai tarinaelementit referenssin kanssa.
 Palauta lista ID-numeroista parhaimmasta huonoimpaan.
+
+Kandidaatit:
+{cand_lines}"""
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_RerankedIds,
+        ),
+    )
+    result = _RerankedIds.model_validate_json(response.text)
+    return result.ids
+
+
+async def rerank_by_criteria(user_query: str, candidates: list[dict]) -> list[int]:
+    """Järjestä kandidaatit käyttäjän kriteerien mukaan (ei referenssiteosta)."""
+    if not candidates:
+        return []
+
+    cand_lines = "\n".join(
+        f"[{c['id']}] {c.get('name') or c.get('title', '?')} "
+        f"({(c.get('first_air_date') or c.get('release_date', ''))[:4]}) "
+        f"- {c.get('overview', '')[:150]}"
+        for c in candidates
+    )
+
+    prompt = f"""Käyttäjä etsii: "{user_query}"
+
+Järjestä alla olevat teokset niin että parhaiten käyttäjän hakua vastaavat ovat ensin.
+Palauta lista ID-numeroista parhaimmasta huonoimpaan. Sisällytä vain relevantit teokset.
 
 Kandidaatit:
 {cand_lines}"""
