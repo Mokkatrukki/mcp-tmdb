@@ -15,6 +15,8 @@ Kutsuketjut: `FLOWS.md`
 - **mcp[cli]** — Anthropicin virallinen MCP SDK (FastMCP)
 - **httpx** — async HTTP-kutsut TMDB:lle
 - **python-dotenv** — ympäristömuuttujat
+- **dspy** — LLM-moduulit classify_query:lle (ChainOfThought + optimointi)
+- **google-genai** — suorat Gemini-kutsut rerank-funktioille
 
 ## Projektirakenne
 
@@ -22,9 +24,11 @@ Kutsuketjut: `FLOWS.md`
 server.py        ← MCP-palvelimen pääpiste (FastMCP) + kaikki työkalut
 search/
   memory.py      ← startup-muisti (genret, palvelut, keyword-cache)
-  prompts.py     ← classify_query() + SmartSearchIntent (Gemini)
+  prompts.py     ← SmartSearchIntent + _postprocess + rerank-funktiot
+  classifier.py  ← DSPy ChainOfThought classify_query + save_example
 data/
   keywords.json  ← TMDB keyword-id:t, verifioitu manuaalisesti
+  examples.json  ← DSPy harjoitusesimerkit (query → oikea SmartSearchIntent)
 pyproject.toml   ← riippuvuudet
 .env             ← TMDB_API_KEY (ei versionhallintaan)
 .mcp.json        ← Claude Code MCP -yhteys
@@ -64,7 +68,8 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - `list_genres` — genret (FI)
 - `list_certifications` — ikärajat (FI)
 - `list_watch_providers` — suoratoistopalvelut (FI)
-- `smart_search` — Gemini-pohjainen älykäs haku (ei LangGraph)
+- `smart_search` — DSPy+Gemini-pohjainen älykäs haku (ei LangGraph)
+- `add_training_example` — tallentaa väärän vastauksen korjauksen data/examples.json:iin
 
 **smart_search -polut:**
 - `discover` / `both_types` — suodatushaku (myös movie+tv rinnakkain)
@@ -84,10 +89,17 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - Gemini (kutsu #2) valitsee 30 kandidaatista temaattisesti sopivimmat
 - Hallusinointiriski minimoitu: Gemini valitsee vain TMDB-haettujen joukosta
 
+**classifier.py — DSPy-integraatio:**
+- `classify_query()` — DSPy ChainOfThought luokittelee kyselyn SmartSearchIntentiksi
+  - `QueryClassification`-signatuuri: query + genret + palvelut + päivämäärä → SmartSearchIntent
+  - `_postprocess()` toimii deterministisenä varmuusverkkona DSPy:n jälkeen
+  - Gemini-malli: `gemini/gemini-2.5-flash-lite-preview-09-2025` (LiteLLM-formaatti)
+- `save_example()` — tallentaa (query, SmartSearchIntent) parin data/examples.json:iin
+- Optimointivaihe myöhemmin: `BootstrapFewShot` kun esimerkkejä ~20 kpl
+
 **prompts.py — funktiot:**
-- `classify_query()` — Gemini luokittelee kyselyn SmartSearchIntentiksi
-- `rerank_candidates()` — similar_to rerankaus referenssiteoksen mukaan
-- `rerank_by_criteria()` — franchise-hakuun, järjestää käyttäjän kriteerien mukaan ilman referenssiteosta
+- `rerank_candidates()` — similar_to rerankaus referenssiteoksen mukaan (google-genai suoraan)
+- `rerank_by_criteria()` — franchise-hakuun, järjestää käyttäjän kriteerien mukaan (google-genai suoraan)
 
 Dokumentaatio: `FLOWS.md`
 

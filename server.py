@@ -7,7 +7,8 @@ from mcp.server.fastmcp import FastMCP
 import httpx
 
 from search.memory import memory, load_memory, TMDB_API_KEY, TMDB_BASE
-from search.prompts import classify_query, rerank_candidates, rerank_by_criteria, SmartSearchIntent
+from search.prompts import rerank_candidates, rerank_by_criteria, SmartSearchIntent
+from search.classifier import classify_query, save_example
 
 
 _LOG_FILE = os.path.join(os.path.dirname(__file__), "debug.log")
@@ -1139,6 +1140,22 @@ async def smart_search(query: str) -> str:
                 date_gte=date_gte,
                 date_lte=date_lte,
             )
+
+
+@mcp.tool()
+async def add_training_example(query: str, correct_intent_json: str) -> str:
+    """
+    Tallenna oikea luokitteluvastaus harjoitusesimerkkeihin DSPy-optimointia varten.
+    query: alkuperäinen hakukysely joka meni väärin
+    correct_intent_json: oikea SmartSearchIntent JSON-muodossa
+    Esimerkki: {"intent":"similar_to","media_type":"tv","reference_titles":["Downton Abbey"],"watch_providers":["Yle Areena"]}
+    """
+    try:
+        intent = SmartSearchIntent.model_validate_json(correct_intent_json)
+        save_example(query, intent)
+        return f"Esimerkki tallennettu: {query!r}"
+    except Exception as e:
+        return f"Virhe: {e}"
 
 
 if __name__ == "__main__":
