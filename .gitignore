@@ -5,3 +5,4 @@ __pycache__/
 search.log.jsonl
 PROMPT.md
 .mcp.json
+debug.log

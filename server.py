@@ -1,11 +1,23 @@
 import asyncio
 import datetime
+import os
+import sys
 from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 import httpx
 
 from search.memory import memory, load_memory, TMDB_API_KEY, TMDB_BASE
 from search.prompts import classify_query, rerank_candidates, rerank_by_criteria, SmartSearchIntent
+
+
+_LOG_FILE = os.path.join(os.path.dirname(__file__), "debug.log")
+
+
+def _log(section: str, text: str) -> None:
+    border = "─" * 60
+    entry = f"\n{border}\n[LOG] {section}\n{border}\n{text}\n"
+    with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(entry)
 
 
 @asynccontextmanager
@@ -52,7 +64,7 @@ async def search_by_title(query: str, type: str = "movie") -> str:
     params = {
         "api_key": TMDB_API_KEY,
         "query": query,
-        "language": "fi",
+        "language": "en",
         "include_adult": False,
         "page": 1,
     }
@@ -105,7 +117,7 @@ async def get_details(id: int, type: str = "movie") -> str:
     id: TMDB-id (saadaan search_by_title-hausta)
     type: 'movie' tai 'tv'
     """
-    params = {"api_key": TMDB_API_KEY, "language": "fi"}
+    params = {"api_key": TMDB_API_KEY, "language": "en"}
     endpoint = f"/movie/{id}" if type == "movie" else f"/tv/{id}"
 
     async with httpx.AsyncClient() as client:
@@ -120,7 +132,7 @@ async def get_details(id: int, type: str = "movie") -> str:
             if coll and coll.get("id"):
                 cr = await client.get(
                     f"{TMDB_BASE}/collection/{coll['id']}",
-                    params={"api_key": TMDB_API_KEY, "language": "fi"},
+                    params={"api_key": TMDB_API_KEY, "language": "en"},
                 )
                 if cr.status_code == 200:
                     parts = cr.json().get("parts", [])
@@ -240,15 +252,15 @@ async def discover(
     with_cast: näyttelijän/ohjaajan TMDB-id filtteriksi
     year_from: aikavälin alku (primary_release_date.gte)
     year_to: aikavälin loppu (primary_release_date.lte)
-    date_gte: ilmestymispäivä alkaen "YYYY-MM-DD" (tv: first_air_date.gte)
-    date_lte: ilmestymispäivä päättyen "YYYY-MM-DD" (tv: first_air_date.lte)
+    date_gte: ilmestymispäivä alkaen "YYYY-MM-DD" (tv: air_date.gte — episodeja ilmestynyt tällä aikavälillä)
+    date_lte: ilmestymispäivä päättyen "YYYY-MM-DD" (tv: air_date.lte)
     """
     genre_list = memory["movie_genres"] if type == "movie" else memory["tv_genres"]
     genre_map = {g["name"].lower(): g["id"] for g in genre_list}
 
     params: dict = {
         "api_key": TMDB_API_KEY,
-        "language": "fi",
+        "language": "en",
         "sort_by": sort_by,
         "vote_count.gte": min_votes,
         "include_adult": False,
@@ -280,9 +292,9 @@ async def discover(
         params["primary_release_date.lte"] = f"{year_to}-12-31"
 
     if date_gte:
-        params["first_air_date.gte"] = date_gte
+        params["air_date.gte"] = date_gte
     if date_lte:
-        params["first_air_date.lte"] = date_lte
+        params["air_date.lte"] = date_lte
 
     if min_rating is not None:
         params["vote_average.gte"] = min_rating
@@ -328,6 +340,7 @@ async def discover(
         params["with_cast"] = with_cast
 
     endpoint = "/discover/movie" if type == "movie" else "/discover/tv"
+    _log("TMDB DISCOVER KUTSU", f"endpoint={endpoint}\nparams={params}")
 
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{TMDB_BASE}{endpoint}", params=params)
@@ -379,7 +392,7 @@ async def search_multi(query: str) -> str:
     params = {
         "api_key": TMDB_API_KEY,
         "query": query,
-        "language": "fi",
+        "language": "en",
         "include_adult": False,
         "page": 1,
     }
@@ -457,7 +470,7 @@ async def search_person(query: str) -> str:
     params = {
         "api_key": TMDB_API_KEY,
         "query": query,
-        "language": "fi",
+        "language": "en",
         "include_adult": False,
         "page": 1,
     }
@@ -500,7 +513,7 @@ async def get_person(id: int) -> str:
     Hae henkilön tiedot ja tärkeimmät roolit TMDB-id:llä.
     id: TMDB-id (saadaan search_person-hausta)
     """
-    params = {"api_key": TMDB_API_KEY, "language": "fi", "append_to_response": "combined_credits"}
+    params = {"api_key": TMDB_API_KEY, "language": "en", "append_to_response": "combined_credits"}
 
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{TMDB_BASE}/person/{id}", params=params)
@@ -578,7 +591,7 @@ async def trending(type: str = "all", time_window: str = "week") -> str:
     time_window: 'day' tai 'week'
     """
     endpoint = f"/trending/{type}/{time_window}"
-    params = {"api_key": TMDB_API_KEY, "language": "fi"}
+    params = {"api_key": TMDB_API_KEY, "language": "en"}
 
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{TMDB_BASE}{endpoint}", params=params)
@@ -643,7 +656,7 @@ async def get_recommendations(id: int, type: str = "movie") -> str:
     type: 'movie' tai 'tv'
     """
     endpoint = f"/movie/{id}/recommendations" if type == "movie" else f"/tv/{id}/recommendations"
-    params = {"api_key": TMDB_API_KEY, "language": "fi", "page": 1}
+    params = {"api_key": TMDB_API_KEY, "language": "en", "page": 1}
 
     async with httpx.AsyncClient() as client:
         r = await client.get(f"{TMDB_BASE}{endpoint}", params=params)
@@ -718,7 +731,7 @@ async def get_keywords(id: int, type: str = "movie") -> str:
 
 
 async def _similar_to(intent: SmartSearchIntent) -> str:
-    """Hae teoksia jotka ovat samankaltaisia kuin referenssiteos."""
+    """Hae teoksia jotka ovat samankaltaisia kuin referenssiteokset (1–n kpl)."""
     ref_type = intent.media_type
 
     # Keywordit jotka ovat liian geneerisiä löytämään temaattisesti samankaltaisia teoksia
@@ -757,7 +770,7 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
 
         params = {
             "api_key": TMDB_API_KEY,
-            "language": "fi",
+            "language": "en",
             "with_original_language": ref_lang or "",
             "with_genres": str(primary_genre_id) if primary_genre_id else "",
             "with_keywords": "|".join(all_kw_ids),
@@ -772,20 +785,35 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
         return disc_r.json().get("results", []), ref_kw_names
 
     async with httpx.AsyncClient() as client:
-        # 1. Hae referenssiteos
-        r = await client.get(
-            f"{TMDB_BASE}/search/{ref_type}",
-            params={"api_key": TMDB_API_KEY, "query": intent.reference_title, "language": "fi", "include_adult": True},
-        )
-        results = r.json().get("results", [])
-        if not results:
-            return f"Ei löydy referenssiteosta: '{intent.reference_title}'"
+        # 1. Hae KAIKKI referenssiteokset rinnakkain
+        ref_titles = intent.reference_titles or []
+        if not ref_titles:
+            return "Ei referenssiteosta annettu."
 
-        ref = results[0]
-        ref_id = ref["id"]
-        ref_lang = ref.get("original_language")
-        ref_genre_ids = ref.get("genre_ids", [])
-        ref_name = ref.get("name") or ref.get("title", "?")
+        async def _search_one(title):
+            r = await client.get(
+                f"{TMDB_BASE}/search/{ref_type}",
+                params={"api_key": TMDB_API_KEY, "query": title, "include_adult": True},
+            )
+            results = r.json().get("results", [])
+            if not results:
+                return None
+            # Otetaan top 5 ja valitaan suositin — TMDB järjestää otsikkovastaavuuden
+            # mukaan, joten esim. "Parasite" löytää 1982-filmin ennen 2019-versiota
+            return max(results[:5], key=lambda x: x.get("vote_count", 0))
+
+        ref_results = await asyncio.gather(*[_search_one(t) for t in ref_titles])
+        refs = [r for r in ref_results if r is not None]
+        not_found = [t for t, r in zip(ref_titles, ref_results) if r is None]
+        if not_found:
+            _log("SIMILAR_TO", f"Referenssejä ei löydy: {not_found}")
+        if not refs:
+            return f"Ei löydy referenssiteoksia: {', '.join(repr(t) for t in ref_titles)}"
+
+        # Kielestä ja genrestä otetaan ensimmäisestä referenssistä
+        primary_ref = refs[0]
+        ref_lang = primary_ref.get("original_language")
+        primary_genre_id = (primary_ref.get("genre_ids") or [None])[0]
 
         # 2. Resolvo intent.keywords → TMDB-ID:t
         user_kw_ids = []
@@ -816,37 +844,66 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
             if prov_match:
                 provider_extras.append({"with_watch_providers": prov_match["provider_id"], "watch_region": "FI"})
 
-        # 4. Rinnakkain: recommendations + (ref keywords → discover)
-        # Jos watch_providers on asetettu, ohitetaan recommendations — niitä ei voi filtteröidä platformin mukaan.
-        # Useita palveluja → rinnakkaiset discover-haut, yhdistetään ja deduplikoidaan.
-        primary_genre_id = ref_genre_ids[0] if ref_genre_ids else None
+        # 4. Rinnakkaiset TMDB-kutsut kaikille referensseille
+        # Jos watch_providers asetettu: keyword-discover per ref per provider
+        # Muuten: keyword-discover + recommendations per ref
         if provider_extras:
-            disc_results = await asyncio.gather(*[
-                _fetch_keyword_discover(client, ref_id, ref_lang, primary_genre_id, user_kw_ids, extra_params=pe)
+            # Järjestys: ref0/pe0, ref0/pe1, ..., ref1/pe0, ref1/pe1, ...
+            gather_tasks = [
+                _fetch_keyword_discover(client, ref["id"], ref_lang, primary_genre_id, user_kw_ids, extra_params=pe)
+                for ref in refs
                 for pe in provider_extras
-            ])
-            ref_kw_names = disc_results[0][1] if disc_results else []
+            ]
+            raw = await asyncio.gather(*gather_tasks)
+            n_pe = len(provider_extras)
+            refs_kw_names = [raw[i * n_pe][1] for i in range(len(refs))]
             seen_disc: set[int] = set()
             disc = []
-            for d, _ in disc_results:
+            for d, _ in raw:
                 for item in d:
                     if item["id"] not in seen_disc:
                         seen_disc.add(item["id"])
                         disc.append(item)
             recs = []
         else:
-            recs_response, (disc, ref_kw_names) = await asyncio.gather(
+            # keyword-discover per ref + recommendations per ref — kaikki rinnakkain
+            disc_tasks = [
+                _fetch_keyword_discover(client, ref["id"], ref_lang, primary_genre_id, user_kw_ids)
+                for ref in refs
+            ]
+            rec_tasks = [
                 client.get(
-                    f"{TMDB_BASE}/{ref_type}/{ref_id}/recommendations",
-                    params={"api_key": TMDB_API_KEY, "language": "fi", "include_adult": True},
-                ),
-                _fetch_keyword_discover(client, ref_id, ref_lang, primary_genre_id, user_kw_ids),
-            )
-            recs = recs_response.json().get("results", [])
+                    f"{TMDB_BASE}/{ref_type}/{ref['id']}/recommendations",
+                    params={"api_key": TMDB_API_KEY, "language": "en", "include_adult": True},
+                )
+                for ref in refs
+            ]
+            all_results = await asyncio.gather(*disc_tasks, *rec_tasks)
+            n = len(refs)
+            disc_raw = all_results[:n]
+            rec_responses = all_results[n:]
+
+            refs_kw_names = [d[1] for d in disc_raw]
+            seen_disc: set[int] = set()
+            disc = []
+            for d, _ in disc_raw:
+                for item in d:
+                    if item["id"] not in seen_disc:
+                        seen_disc.add(item["id"])
+                        disc.append(item)
+
+            seen_recs: set[int] = set()
+            recs = []
+            for resp in rec_responses:
+                for item in resp.json().get("results", []):
+                    if item["id"] not in seen_recs:
+                        seen_recs.add(item["id"])
+                        recs.append(item)
 
     # 5. Yhdistä laaja kandidaattijoukko (disc ensin, recs täydentää)
+    excluded = {ref["id"] for ref in refs}
     order = (disc + recs) if disc else (recs + disc)
-    seen = {ref_id}
+    seen = set(excluded)
     candidates = []
     for item in order:
         item_id = item.get("id")
@@ -854,15 +911,21 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
             seen.add(item_id)
             candidates.append(item)
 
+    ref_names = [ref.get("name") or ref.get("title", "?") for ref in refs]
     if not candidates:
-        return f"Ei löydy samankaltaisia teoksia: '{ref_name}'"
+        return f"Ei löydy samankaltaisia teoksia: {' & '.join(repr(n) for n in ref_names)}"
 
-    # 5. LLM rerankaa: referenssin kuvaus + teemat → valitaan parhaiten sopivat
-    ref_overview = ref.get("overview", "")
+    # 6. LLM rerankaa: kaikkien referenssien kuvaukset + teemat → valitaan parhaiten sopivat
+    ref_items = [
+        {
+            "name": ref.get("name") or ref.get("title", "?"),
+            "overview": ref.get("overview", ""),
+            "kw_names": kw_names,
+        }
+        for ref, kw_names in zip(refs, refs_kw_names)
+    ]
     ranked_ids = await rerank_candidates(
-        ref_name=ref_name,
-        ref_overview=ref_overview,
-        ref_kw_names=ref_kw_names,
+        ref_items=ref_items,
         user_keywords=intent.keywords,
         candidates=candidates[:30],  # max 30 kandidaattia Geminille
     )
@@ -878,7 +941,8 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
     genre_list = memory["tv_genres"] if ref_type == "tv" else memory["movie_genres"]
     genre_map = {g["id"]: g["name"] for g in genre_list}
 
-    lines = [f"Samankaltaisia kuin '{ref_name}':\n"]
+    ref_label = " & ".join(f"'{n}'" for n in ref_names)
+    lines = [f"Samankaltaisia kuin {ref_label}:\n"]
     for item in top:
         title = item.get("name") or item.get("title", "?")
         original = item.get("original_name") or item.get("original_title", "")
@@ -966,6 +1030,8 @@ async def smart_search(query: str) -> str:
     except Exception as e:
         return f"Virhe kyselyn tulkinnassa: {e}"
 
+    _log("SMART_SEARCH REITITYS", f"intent={intent.intent} | media_type={intent.media_type} | reference_titles={intent.reference_titles} | actor_name={intent.actor_name} | genres={intent.genres} | keywords={intent.keywords} | year_from={intent.year_from} | year_to={intent.year_to} | watch_providers={intent.watch_providers}")
+
     match intent.intent:
         case "low_confidence":
             return (
@@ -984,6 +1050,17 @@ async def smart_search(query: str) -> str:
         case "lookup":
             return await search_by_title(intent.title or intent.name or query, intent.media_type)
         case "similar_to":
+            # Fallback: jos Gemini ei poiminut watch_providers, skannaa kysely itse
+            if not intent.watch_providers:
+                all_providers = memory["movie_providers"] + memory["tv_providers"]
+                query_lower = query.lower()
+                found = [
+                    p["provider_name"] for p in all_providers
+                    if p["provider_name"].lower() in query_lower
+                ]
+                if found:
+                    intent.watch_providers = list(dict.fromkeys(found))
+                    _log("WATCH_PROVIDERS FALLBACK", f"Poimittu kyselystä: {intent.watch_providers}")
             return await _similar_to(intent)
         case _:  # discover (+ both_types + airing_now)
             # Näyttelijä/ohjaaja-filtteri: hae TMDB-id nimellä
@@ -997,6 +1074,7 @@ async def smart_search(query: str) -> str:
                     _persons = _pr.json().get("results", [])
                     if _persons:
                         with_cast_id = _persons[0]["id"]
+                        _log("ACTOR RESOLVAUS", f"{intent.actor_name} → id={with_cast_id} ({_persons[0].get('name')})")
 
             date_gte = None
             date_lte = None
@@ -1011,6 +1089,7 @@ async def smart_search(query: str) -> str:
                     date_gte, date_lte = f"{y}-07-01", f"{y}-09-30"
                 else:
                     date_gte, date_lte = f"{y}-10-01", f"{y}-12-31"
+                intent.min_votes = min(intent.min_votes, 10)
 
             providers = intent.watch_providers or [None]
 

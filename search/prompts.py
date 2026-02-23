@@ -1,9 +1,20 @@
 import datetime
 import os
+import sys
 from pydantic import BaseModel
 from google import genai
 from google.genai import types as genai_types
 from dotenv import load_dotenv
+
+
+_LOG_FILE = os.path.join(os.path.dirname(__file__), "..", "debug.log")
+
+
+def _log(section: str, text: str) -> None:
+    border = "─" * 60
+    entry = f"\n{border}\n[LOG] {section}\n{border}\n{text}\n"
+    with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(entry)
 
 load_dotenv()
 
@@ -27,7 +38,7 @@ class SmartSearchIntent(BaseModel):
     person_name: str | None = None
     title: str | None = None
     name: str | None = None
-    reference_title: str | None = None
+    reference_titles: list[str] | None = None
     sort_by: str = "popularity.desc"
     min_votes: int = 100
     airing_now: bool = False
@@ -40,7 +51,7 @@ def _build_prompt(query: str, memory: dict) -> str:
     today = datetime.date.today().isoformat()
     movie_genres = ", ".join(g["name"] for g in memory.get("movie_genres", []))
     tv_genres = ", ".join(g["name"] for g in memory.get("tv_genres", []))
-    providers = ", ".join(p["provider_name"] for p in memory.get("movie_providers", [])[:20])
+    providers = ", ".join(p["provider_name"] for p in memory.get("movie_providers", []))
 
     return f"""Olet elokuva- ja sarjahakujärjestelmä. Analysoi hakukysely ja palauta JSON.
 Tänään on {today}.
@@ -76,7 +87,12 @@ lookup:      Tiedot yhdestä nimetystä teoksesta. Merkkejä: "kerro", "mikä on
 similar_to:  Teos mainitaan VERTAILUKOHTANA, ei kohteena.
              Merkkejä: "kuten", "samanlainen kuin", "X tyylinen", "X oli hyvä
              anna lisää", "enemmän kuin X", teos + pyyntö lisää samaa.
-             → aseta reference_title
+             → aseta reference_titles listana
+             Yksi teos → ["The Lobster"]
+             Useita → ["The Lobster", "Parasite"]
+             TÄRKEÄÄ: Jos kyselyssä mainitaan suoratoistopalvelu, aseta watch_providers.
+             Esimerkki: "sarjoja kuten Downton Abbey Yle Areenasta"
+               → intent=similar_to, reference_titles=["Downton Abbey"], watch_providers=["Yle Areena"]
 
 person:      Tietoa henkilöstä — EI teoslistaa filtterein. Merkkejä: "kuka on",
              henkilönimi YKSIN ilman muita kriteereitä, "kerro X:stä".
@@ -173,9 +189,9 @@ def _postprocess(intent: SmartSearchIntent, query: str = "") -> SmartSearchInten
             if not genres:
                 data["genres"] = ["Animaatio"]
 
-    # Franchise-haku: jos kyselyssä on sarjaviittaus → pakota tv
-    if data.get("franchise_query") and data.get("media_type") != "tv":
-        if _re.search(r'\bsarj[a-zäöå]*\b', query, _re.IGNORECASE):
+    # Sarjaviittaus kyselyssä → aina tv, riippumatta intentistä
+    if query and data.get("media_type") != "tv":
+        if _re.search(r'\bsarj[a-zäöå]*\b|\bshow[s]?\b|\bseries\b', query, _re.IGNORECASE):
             data["media_type"] = "tv"
 
     return SmartSearchIntent(**data)
@@ -186,9 +202,7 @@ class _RerankedIds(BaseModel):
 
 
 async def rerank_candidates(
-    ref_name: str,
-    ref_overview: str,
-    ref_kw_names: list[str],
+    ref_items: list[dict],        # [{name, overview, kw_names}] — yksi per referenssi
     user_keywords: list[str] | None,
     candidates: list[dict],
 ) -> list[int]:
@@ -204,18 +218,23 @@ async def rerank_candidates(
     )
     user_kw_str = f"\nKäyttäjä painottaa erityisesti: {', '.join(user_keywords)}" if user_keywords else ""
 
-    prompt = f"""Olet elokuvasuositin. Referenssiteos:
-Nimi: {ref_name}
-Kuvaus: {ref_overview[:400]}
-Teemat: {', '.join(ref_kw_names) or '-'}{user_kw_str}
+    ref_lines = "\n".join(
+        f"{i + 1}. {item['name']} — {item['overview'][:300]} — teemat: {', '.join(item['kw_names']) or '-'}"
+        for i, item in enumerate(ref_items)
+    )
+
+    prompt = f"""Olet elokuvasuositin.
+Referenssiteokset:
+{ref_lines}{user_kw_str}
 
 Valitse alla olevista kandidaateista enintään 12 temaattisesti parhaiten sopivaa.
-Suosi teoksia jotka jakavat saman tunnelman, teemat tai tarinaelementit referenssin kanssa.
+Suosi teoksia jotka jakavat saman tunnelman, teemat tai tarinaelementit kaikkien referenssiteosten kanssa.
 Palauta lista ID-numeroista parhaimmasta huonoimpaan.
 
 Kandidaatit:
 {cand_lines}"""
 
+    _log("GEMINI #2 PROMPT (rerank_candidates)", prompt)
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -225,6 +244,7 @@ Kandidaatit:
             response_schema=_RerankedIds,
         ),
     )
+    _log("GEMINI #2 VASTAUS (rerank_candidates)", response.text)
     result = _RerankedIds.model_validate_json(response.text)
     return result.ids
 
@@ -249,6 +269,7 @@ Palauta lista ID-numeroista parhaimmasta huonoimpaan. Sisällytä vain relevanti
 Kandidaatit:
 {cand_lines}"""
 
+    _log("GEMINI #2 PROMPT (rerank_by_criteria)", prompt)
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -258,6 +279,7 @@ Kandidaatit:
             response_schema=_RerankedIds,
         ),
     )
+    _log("GEMINI #2 VASTAUS (rerank_by_criteria)", response.text)
     result = _RerankedIds.model_validate_json(response.text)
     return result.ids
 
@@ -265,6 +287,7 @@ Kandidaatit:
 async def classify_query(query: str, memory: dict) -> SmartSearchIntent:
     client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = _build_prompt(query, memory)
+    _log("GEMINI #1 PROMPT (classify_query)", prompt)
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
@@ -273,5 +296,8 @@ async def classify_query(query: str, memory: dict) -> SmartSearchIntent:
             response_schema=SmartSearchIntent,
         ),
     )
+    _log("GEMINI #1 VASTAUS (raaka JSON)", response.text)
     intent = SmartSearchIntent.model_validate_json(response.text)
-    return _postprocess(intent, query)
+    postprocessed = _postprocess(intent, query)
+    _log("INTENT (postprocess jälkeen)", postprocessed.model_dump_json(indent=2))
+    return postprocessed
