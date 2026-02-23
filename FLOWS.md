@@ -58,12 +58,13 @@ käyttäjä kirjoittaa kyselyn
   ┌──────────────────────────────────┐
   │        classify_query()          │
   │                                  │
-  │  Gemini lukee:                   │
+  │  DSPy ChainOfThought lukee:      │
   │  · kyselyn                       │
   │  · genret (FI)                   │
   │  · suoratoistopalvelut (FI)      │
   │  · tämän päivän päivämäärä       │
   │                                  │
+  │  Malli: Gemini 2.5 Flash Lite    │
   │  Palauttaa: SmartSearchIntent    │
   └──────────────┬───────────────────┘
                  │
@@ -334,6 +335,90 @@ Keyword-cache toimii näin:
 
 `get_keywords` täyttää cachen sivutuotteena — teoksen keywordit
 lisätään automaattisesti.
+
+---
+
+## DSPy-luokittelija — miten toimii ja miten parannetaan
+
+### Rakenne
+
+```
+search/classifier.py
+  ├── QueryClassification   ← dspy.Signature (kentät + ohjeteksti)
+  ├── _classifier           ← dspy.ChainOfThought(QueryClassification)
+  ├── classify_query()      ← async julkinen rajapinta → kutsuu _classify_sync
+  └── save_example()        ← tallentaa (query, SmartSearchIntent) data/examples.json:iin
+```
+
+### Luokitteluketju
+
+```
+classify_query(query, memory)
+        │
+        ▼
+DSPy ChainOfThought
+  · rakentaa promptin: ohjeteksti + syötteet
+  · Gemini tuottaa reasoning-ketjun (CoT)
+  · parsii tuloksen SmartSearchIntent-objektiksi
+        │
+        ▼
+_postprocess(result, query)   ← deterministiset korjaussäännöt
+        │
+        ▼
+SmartSearchIntent valmis → reititys
+```
+
+Lokit näyttävät jokaisen vaiheen:
+```
+[DSPY REASONING]  ... Geminin ajatusketju ...
+[DSPY RESULT (raaka)]  { intent: "...", ... }
+[INTENT (postprocess jälkeen)]  { intent: "...", ... }
+```
+
+### Kun luokittelu menee väärin — miten korjataan
+
+**1. Havaitse virhe** — smart_search palauttaa väärän tuloksen
+
+**2. Käytä `add_training_example`-työkalua:**
+```
+add_training_example(
+  query="sarjoja kuten Downton Abbey Yle Areenasta",
+  correct_intent_json='{"intent":"similar_to","media_type":"tv",
+    "reference_titles":["Downton Abbey"],"watch_providers":["Yle Areena"]}'
+)
+```
+Tallentuu → `data/examples.json`
+
+**3. Tarkista `QueryClassification`-signatuuri** (`search/classifier.py`):
+- Puuttuuko intent-tyyppi ohjetekstistä?
+- Onko edge case katettu esimerkeillä?
+- Lisää sääntö tarvittaessa suoraan docstringiin
+
+### Optimointi BootstrapFewShot:lla (kun esimerkkejä ~20 kpl)
+
+```python
+# Tällä hetkellä: nolla-shot ChainOfThought
+_classifier = dspy.ChainOfThought(QueryClassification)
+
+# Tulevaisuudessa: few-shot optimoitu versio
+from dspy.teleprompt import BootstrapFewShot
+
+examples = json.loads(Path("data/examples.json").read_text())
+trainset = [
+    dspy.Example(query=e["query"], result=SmartSearchIntent(**e["correct"]))
+    .with_inputs("query", "available_movie_genres", "available_tv_genres",
+                 "available_providers", "today")
+    for e in examples
+]
+
+teleprompter = BootstrapFewShot(metric=your_metric)
+optimized = teleprompter.compile(_classifier, trainset=trainset)
+```
+
+**Milloin optimoida:**
+- Esimerkkejä ≥ 20 kpl `data/examples.json`:ssä
+- Sama virhe toistuu eri kyselyissä
+- Signatuuri-muutos ei riitä korjaamaan
 
 ---
 
