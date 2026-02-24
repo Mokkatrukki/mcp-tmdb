@@ -49,7 +49,7 @@ import re as _re
 
 # Suomenkielinen tyylisana → TMDB-keywordit englanniksi
 _STYLE_KEYWORDS: dict[str, list[str]] = {
-    "synkkä":       ["dark fantasy"],
+    "synkk":        ["dark fantasy"],   # synkkä, synkkiä, synkempää...
     "tumma":        ["dark fantasy"],
     "kosto":        ["revenge"],
     "psykologinen": ["psychological"],
@@ -73,7 +73,7 @@ _STYLE_KEYWORDS: dict[str, list[str]] = {
 # Kielimerkki kyselyssä → ISO 639-1
 _LANGUAGE_HINTS: dict[str, str] = {
     "k-drama":      "ko",
-    "korealainen":  "ko",
+    "korealai":     "ko",   # korealainen, korealaisia, korealaisten...
     "bollywood":    "hi",
     "intialainen":  "hi",
     "ranskalainen": "fr",
@@ -84,10 +84,11 @@ _LANGUAGE_HINTS: dict[str, str] = {
 # Laatu/järjestys-sanat kyselyssä → sort_by + min_votes
 _SORT_HINTS: list[tuple[str, str, int]] = [
     ("paras",       "vote_average.desc", 500),
-    ("klassikko",   "vote_average.desc", 500),
+    ("klassik",     "vote_average.desc", 500),   # klassikko, klassikoita, klassikoiden...
     ("must see",    "vote_average.desc", 500),
     ("suosituin",   "popularity.desc",   100),
-    ("uusin",       "release_date.desc", 100),
+    ("uusin",       "release_date.desc", 100),   # uusin
+    ("uusimpi",     "release_date.desc", 100),   # uusimpia, uusimpien...
     ("tuorein",     "release_date.desc", 100),
     # "ei tarvitse olla parhaita" / "vähemmän tunnettu" → laajempi pool, laatu-sort
     ("parhaita",    "vote_average.desc",  50),
