@@ -8,13 +8,22 @@
 ## Tiedostorakenne
 
 ```
-server.py          ← MCP-palvelin + kaikki työkalut + smart_search-reititys
+server.py            ← MCP-rekisteröinti + 2 omaa työkalua (63 riviä)
 search/
-  memory.py        ← käynnistysmuisti (genret, palvelut, keyword-cache)
-  prompts.py       ← classify_query() + rerank_candidates() + rerank_by_criteria()
+  memory.py          ← käynnistysmuisti, _log, TMDB-vakiot
+  tools.py           ← 12 TMDB-työkalua plain async-funktioina
+  smart.py           ← _similar_to, _franchise_search, route()
+  prompts.py         ← SmartSearchIntent, _postprocess, DSPy-rerankerit
+  classifier.py      ← DSPy-luokittelija, save_example
 data/
-  keywords.json    ← TMDB keyword-id:t, verifioitu manuaalisesti
+  keywords.json      ← TMDB keyword-id:t, verifioitu manuaalisesti
+  examples.json      ← luokitteluesimerkit BootstrapFewShot-optimointia varten
 ```
+
+Jako on tarkoituksellinen:
+- `tools.py` ei tiedä älykkäästä hausta mitään — se on pelkkä TMDB-kuori
+- `smart.py` käyttää `tools.py`:n funktioita, ei toisinpäin
+- `server.py` on pelkkä rekisteröintikerros — ei logiikkaa
 
 ---
 
@@ -110,6 +119,48 @@ person     · henkilönimi YKSIN               "kuka on Tom Hanks"
 trending   · "trendaa", "mitä katsotaan nyt" "mitä elokuvia trendaa"
 ```
 
+Intent-kentät ovat Pydantic `Literal`-tyyppiä — jos Gemini palauttaa
+tuntemattoman intentin, Pydantic hylkää sen välittömästi ennen kuin
+koodi ehtii käyttää arvoa.
+
+---
+
+## SmartSearchIntent — rakenne
+
+Yksi Pydantic-malli joka kuvaa mitä käyttäjä haluaa. Kentät on ryhmitelty
+sen mukaan mihin intenttiin ne kuuluvat:
+
+```python
+class SmartSearchIntent(BaseModel):
+    # Kaikille intenteille
+    intent:     Literal["discover", "similar_to", "franchise",
+                        "lookup", "person", "trending"]
+    media_type: Literal["movie", "tv"] = "movie"
+
+    # trending
+    time_window: str = "week"
+
+    # discover
+    genres, keywords, year, year_from, year_to,
+    min_rating, language, sort_by, min_votes,
+    airing_now, both_types, actor_name
+
+    # discover + similar_to
+    watch_providers: list[str] | None
+
+    # similar_to
+    reference_titles: list[str] | None
+
+    # lookup
+    title: str | None
+
+    # person
+    person_name: str | None
+
+    # franchise
+    franchise_query: str | None
+```
+
 ---
 
 ## _postprocess() — Geminin jälkeen tehtävät automaattiset korjaukset
@@ -127,9 +178,15 @@ genres=["Animaatio"] ilman kieltä      → language="ja"
 
 "anime/isekai/seinen" kyselyssä        → language="ja" + genres=["Animaatio"]
 
-franchise_query asetettu + "sarj*"     → media_type="tv"
-kyselyssä                                (Gemini voi sekoittaa elokuva/sarja)
+"sarj*" / "show" / "series" kyselyssä → media_type="tv"
+
+kielisana kyselyssä ("k-drama" jne.)  → language="ko" (tai muu ISO 639-1)
+
+tyylisana kyselyssä ("synkkä" jne.)   → lisätään TMDB-keyword
 ```
+
+Periaate: LLM hoitaa tulkinnan, deterministinen koodi hoitaa
+varmuusverkon. Kumpikin tekee sen mihin se on paras.
 
 ---
 
@@ -192,7 +249,7 @@ franchise_query="Gundam", media_type="tv"
   (vältää täysin epäolennaiset)
          │
          ▼
-  rerank_by_criteria(query, kandidaatit[:30])
+  DSPy ChainOfThought (_RerankByCriteria)
   "parhaat vakavat tummat Gundam sarjat"
          │
          ▼
@@ -235,7 +292,9 @@ VAIHE 2 — Rinnakkain (asyncio.gather)
    │                      │    │     anime, based on manga,    │
    │                      │    │     magic, romance, adventure │
    │                      │    │                               │
-   │                      │    │  3. user-kw + ref-kw → OR    │
+   │                      │    │  3. user-kw + ref-kw          │
+   │                      │    │     AND top-2 ensin (tarkat)  │
+   │                      │    │     OR-fallback jos < 10      │
    │                      │    │                               │
    │                      │    │  4. /discover/tv              │
    │                      │    │     ?with_keywords=X|Y|Z      │
@@ -250,10 +309,10 @@ VAIHE 2 — Rinnakkain (asyncio.gather)
                  ~30 kandidaattia
 
 
-VAIHE 3 — LLM rerankaus (Gemini kutsu #2)
-───────────────────────────────────────────
+VAIHE 3 — DSPy rerankaus (_RerankByReference)
+───────────────────────────────────────────────
 
-  Geminille annetaan referenssiteoksen kuvaus + teemat + kandidaatit.
+  DSPy saa referenssiteoksen kuvauksen + teemat + kandidaatit.
   Gemini valitsee parhaiten sopivat ja järjestää ne.
   Palautetaan top 12.
 ```
@@ -265,41 +324,32 @@ rinnakkain ja yhdistetään tulokset.
 
 ---
 
-## get_details — kokoelmatuki elokuville
+## DSPy kaikkialla — yksi LLM-kirjasto
 
-Kun haet elokuvan tiedot, palvelin tarkistaa automaattisesti kuuluuko
-se kokoelmaan (esim. Blade Runner Collection, Star Wars Collection):
+Kaikki LLM-kutsut kulkevat DSPy:n kautta. Mallina Gemini 2.5 Flash Lite.
 
 ```
-/movie/{id}
-    │
-    ├── belongs_to_collection.id löytyy?
-    │       │
-    │       ▼
-    │   /collection/{collection_id}
-    │       │
-    │       ▼
-    │   Kaikki kokoelman osat aikajärjestyksessä
-    │   "tämä" merkitään ◄
-    │
-    └── ei → ei lisätietoja
+search/classifier.py
+  _classifier = dspy.ChainOfThought(QueryClassification)
+      → kyselyn luokittelu → SmartSearchIntent
+
+search/prompts.py
+  _reranker          = dspy.ChainOfThought(_RerankByReference)
+      → similar_to rerankaus referenssiteoksen perusteella
+
+  _criteria_reranker = dspy.ChainOfThought(_RerankByCriteria)
+      → franchise rerankaus käyttäjän kriteerien perusteella
 ```
 
-Esimerkki:
-```
-Blade Runner: The Final Cut (1982)
-...
-Osa kokoelmaa: Blade Runner Collection
-  Blade Runner: The Final Cut (1982) — 7.9/10 ◄ tämä
-  Blade Runner 2049 (2017) — 7.6/10
-```
+Kaikki kolme käyttävät samaa `dspy.configure(lm=...)` -konfiguraatiota.
+Mallin vaihtaminen tapahtuu yhdestä paikasta (`classifier.py`).
 
 ---
 
 ## Miksi LLM-rerankaus on turvallinen ratkaisu
 
 ```
-✓ TURVALLINEN:  Gemini valitsee TMDB:stä haettujen joukosta
+✓ TURVALLINEN:  DSPy valitsee TMDB:stä haettujen joukosta
                 → ei voi keksiä teoksia joita ei ole
                 → vain järjestää ja suodattaa olemassaolevaa
 
@@ -336,19 +386,12 @@ Keyword-cache toimii näin:
 `get_keywords` täyttää cachen sivutuotteena — teoksen keywordit
 lisätään automaattisesti.
 
+**Nykyinen ongelma:** cache katoaa kun palvelin käynnistyy uudelleen.
+→ Seuraava askel: tallenna cache `data/keyword_cache.json`:iin ja lataa se käynnistyksessä.
+
 ---
 
 ## DSPy-luokittelija — miten toimii ja miten parannetaan
-
-### Rakenne
-
-```
-search/classifier.py
-  ├── QueryClassification   ← dspy.Signature (kentät + ohjeteksti)
-  ├── _classifier           ← dspy.ChainOfThought(QueryClassification)
-  ├── classify_query()      ← async julkinen rajapinta → kutsuu _classify_sync
-  └── save_example()        ← tallentaa (query, SmartSearchIntent) data/examples.json:iin
-```
 
 ### Luokitteluketju
 
@@ -360,6 +403,7 @@ DSPy ChainOfThought
   · rakentaa promptin: ohjeteksti + syötteet
   · Gemini tuottaa reasoning-ketjun (CoT)
   · parsii tuloksen SmartSearchIntent-objektiksi
+  · Pydantic validoi: tuntematon intent → ValidationError
         │
         ▼
 _postprocess(result, query)   ← deterministiset korjaussäännöt
@@ -439,4 +483,50 @@ Baywatch TV)
 Franchise-haku ei löydä       TMDB-haku ei indeksoi     osittainen:
 kaikkia osia jos franchise-   japanilaisia nimiä        2-sivu-haku
 nimi on vain japanissa        hyvin englanniksi          auttaa
+
+similar_to + watch_provider   TMDB recommendations-     discover per
+→ recommendations ohitetaan   endpoint ei tue           palvelu, ei
+                               platform-filttereitä     recommendations
 ```
+
+---
+
+## Seuraavat kehitysideat
+
+Tässä asioita joita voisi tehdä seuraavaksi, helpoimmasta monimutkaisimpaan:
+
+### Nopeat voitot
+
+**Testit `_postprocess`-säännöille**
+Deterministiset säännöt ovat täydellinen testikohde — ei LLM-kutsuja,
+nopeat, kertovat heti jos jokin hajoaa. Esim. `pytest tests/test_postprocess.py`.
+
+**Persistent keyword-cache**
+Nyt cache katoaa käynnistyksen yhteydessä. Tallennus `data/keyword_cache.json`:iin
+ja lataus käynnistyksessä — muutama rivi koodia, iso hyöty API-kutsuissa.
+
+### Classifier-parannukset
+
+**BootstrapFewShot-optimointi**
+Kun `data/examples.json`:ssä on ~20 esimerkkiä, voidaan optimoida
+DSPy:n promptit automaattisesti. Todennäköisesti parantaa luokittelutarkkuutta
+merkittävästi erityisesti edge caseissa.
+
+**Epävarma kysely → tarkennus**
+Jos DSPy:n reasoning-ketjusta näkyy epävarmuus, voisi pyytää käyttäjältä
+tarkennusta ennen hakua. "Tarkoitatko elokuvaa vai sarjaa?"
+
+### Isommat ominaisuudet
+
+**Käyttäjän preferenssimuisti**
+"En tykkää kauhusta", "suosin 2010-luvun elokuvia", "olen jo nähnyt Breaking Badin"
+→ tallennetaan sessiokohtaisesti tai pysyvästi, vaikuttaa hakuihin.
+
+**similar_to + watch_providers yhdistettynä**
+Nyt recommendations ohitetaan kokonaan jos palvelu asetettu.
+Voisi hakea recommendations ensin, sitten filtteröidä palvelun mukaan
+erillisellä watch_providers-kyselyllä.
+
+**Monireferenssinen similar_to**
+Toimii jo teknisesti (`reference_titles: list[str]`), mutta rerankausta
+voisi parantaa: nyt ensimmäinen referenssi dominoi kielen ja genren valinnan.

@@ -151,10 +151,10 @@ Samanlaisia kuin Breaking Bad
 
 ## Stack
 
-- **Python 3.12+** + `uv` pakettienhallintaan
+- **Python 3.11+** + `uv` pakettienhallintaan
 - **FastMCP** (Anthropicin virallinen MCP SDK)
 - **httpx** — async HTTP-kutsut TMDB:lle
-- **Gemini 2.5 Flash Lite** — kyselyn tulkinta ja tulosten rerankaus
+- **DSPy** — kyselyn luokittelu ja tulosten rerankaus (Gemini 2.5 Flash Lite)
 - **TMDB API v3** — elokuva- ja sarjadata
 
 ---
