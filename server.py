@@ -269,17 +269,9 @@ async def discover(
     }
 
     if genres:
-        ids = []
-        unknown = []
-        for name in genres:
-            gid = genre_map.get(name.lower())
-            if gid:
-                ids.append(str(gid))
-            else:
-                unknown.append(name)
-        if unknown:
-            return f"Tuntemattomia genrejä: {', '.join(unknown)}. Käytä list_genres-työkalua nähdäksesi saatavilla olevat genret."
-        params["with_genres"] = "|".join(ids)
+        ids = [str(gid) for name in genres if (gid := genre_map.get(name.lower()))]
+        if ids:
+            params["with_genres"] = "|".join(ids)
 
     if year:
         if type == "movie":
@@ -740,11 +732,14 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
         "anime", "based on light novel", "based on manga", "based on novel",
         "based on web novel", "based on a video game", "magic", "adventure",
         "romance", "based on comic book", "superhero",
+        # Demografiataggit — liian laajoja, matchaavat kaikki ko. demografian sarjat
+        "shounen", "shoujo", "josei", "seinen",
     }
 
     async def _fetch_keyword_discover(client, ref_id, ref_lang, primary_genre_id, user_kw_ids, extra_params=None):
-        """Hae referenssin keywordit → yhdistä user-keywordeihin → discover (OR).
-        Palauttaa (disc_results, ref_kw_names) jossa ref_kw_names on filtteröity lista keyword-nimistä."""
+        """Hae referenssin keywordit → yhdistä user-keywordeihin → discover.
+        Strategia: strict (AND top-2) ensin, OR-fallback täydentää jos tuloksia < 10.
+        Palauttaa (disc_results, ref_kw_names)."""
         kw_field = "results" if ref_type == "tv" else "keywords"
         kw_r = await client.get(
             f"{TMDB_BASE}/{ref_type}/{ref_id}/keywords",
@@ -769,21 +764,44 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
         if not all_kw_ids:
             return [], ref_kw_names
 
-        params = {
+        base_params = {
             "api_key": TMDB_API_KEY,
             "language": "en",
             "with_original_language": ref_lang or "",
             "with_genres": str(primary_genre_id) if primary_genre_id else "",
-            "with_keywords": "|".join(all_kw_ids),
             "sort_by": "vote_average.desc",
             "vote_count.gte": 100,
             "include_adult": True,
         }
         if extra_params:
-            params.update(extra_params)
+            base_params.update(extra_params)
 
-        disc_r = await client.get(f"{TMDB_BASE}/discover/{ref_type}", params=params)
-        return disc_r.json().get("results", []), ref_kw_names
+        seen: set[int] = set()
+        results: list[dict] = []
+
+        # 1. Strict: AND kahdella tärkeimmällä keywordilla — tarkat osumat
+        if len(all_kw_ids) >= 2:
+            r = await client.get(
+                f"{TMDB_BASE}/discover/{ref_type}",
+                params={**base_params, "with_keywords": ",".join(all_kw_ids[:2])},
+            )
+            for item in r.json().get("results", []):
+                if item["id"] not in seen:
+                    seen.add(item["id"])
+                    results.append(item)
+
+        # 2. OR-fallback: kaikki keywordit — täydentää jos strict < 10 tulosta
+        if len(results) < 10:
+            r = await client.get(
+                f"{TMDB_BASE}/discover/{ref_type}",
+                params={**base_params, "with_keywords": "|".join(all_kw_ids)},
+            )
+            for item in r.json().get("results", []):
+                if item["id"] not in seen:
+                    seen.add(item["id"])
+                    results.append(item)
+
+        return results, ref_kw_names
 
     async with httpx.AsyncClient() as client:
         # 1. Hae KAIKKI referenssiteokset rinnakkain
@@ -897,7 +915,7 @@ async def _similar_to(intent: SmartSearchIntent) -> str:
             recs = []
             for resp in rec_responses:
                 for item in resp.json().get("results", []):
-                    if item["id"] not in seen_recs:
+                    if item["id"] not in seen_recs and item.get("original_language") == ref_lang:
                         seen_recs.add(item["id"])
                         recs.append(item)
 

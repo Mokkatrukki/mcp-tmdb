@@ -85,9 +85,11 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 **similar_to — keskeiset yksityiskohdat:**
 - `include_adult=True` — adult-sisältö mukaan (tärkeä esim. seinen-anime)
 - ref-keywordit haetaan TMDB:stä, generiset suodatetaan (_SKIP_KW)
-- user-keywordit + ref-keywordit yhdistetään OR-discover-kutsuun
-- Gemini (kutsu #2) valitsee 30 kandidaatista temaattisesti sopivimmat
-- Hallusinointiriski minimoitu: Gemini valitsee vain TMDB-haettujen joukosta
+  - _SKIP_KW sisältää myös demografiataggit: shounen, shoujo, josei, seinen (liian laajoja OR-haussa)
+- discover-strategia: AND top-2 keywordilla ensin (tarkat osumat), OR-fallback jos < 10 tulosta
+- recommendations suodatetaan `original_language == ref_lang` mukaan (ei satunnaisia vieraskielisiä)
+- DSPy (kutsu #2) valitsee 30 kandidaatista temaattisesti sopivimmat
+- Hallusinointiriski minimoitu: DSPy valitsee vain TMDB-haettujen joukosta
 
 **classifier.py — DSPy-integraatio:**
 - `classify_query()` — DSPy ChainOfThought luokittelee kyselyn SmartSearchIntentiksi
@@ -98,8 +100,15 @@ params = {"api_key": TMDB_API_KEY_V3, ...}
 - Optimointivaihe myöhemmin: `BootstrapFewShot` kun esimerkkejä ~20 kpl
 
 **prompts.py — funktiot:**
-- `rerank_candidates()` — similar_to rerankaus referenssiteoksen mukaan (google-genai suoraan)
+- `rerank_candidates()` — similar_to rerankaus referenssiteoksen mukaan (DSPy ChainOfThought)
 - `rerank_by_criteria()` — franchise-hakuun, järjestää käyttäjän kriteerien mukaan (google-genai suoraan)
+
+**prompts.py — _postprocess:**
+- `_STYLE_KEYWORDS` — suomenkieliset tyylisanat → TMDB-keywordit (varret, ei taivutettu)
+  - "aikuismais" → josei + romance, "romantti" → romance, "kypsä" → josei + seinen
+- `_SORT_HINTS` — laatu/järjestys-sanat → sort_by + min_votes
+  - "parhaita" / "tunnettu" → vote_average.desc + min_votes 50 (laajempi pool, vähemmän mainstream)
+- `_LANGUAGE_HINTS` — kielisanat → ISO 639-1
 
 Dokumentaatio: `FLOWS.md`
 

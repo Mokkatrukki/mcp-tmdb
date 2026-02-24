@@ -24,72 +24,47 @@ dspy.configure(lm=_lm)
 class QueryClassification(dspy.Signature):
     """Olet elokuva- ja sarjahakujärjestelmä. Analysoi hakukysely ja palauta JSON.
 
-## Intent — valitse MITÄ käyttäjä haluaa:
+## Intent — valitse yksi:
 
-franchise:   Käyttäjä haluaa teoksia tietystä franchisesta nimellä + valintakriteerin
-             (paras, tummin, suosituin jne.). Merkkejä: franchise-nimi + adjektiivi.
-             Esimerkkejä: "parhaat Gundam-sarjat", "tummimmat Star Wars -elokuvat"
-             → aseta franchise_query=<franchise-nimi>
+franchise:   Franchise-nimi + valintakriteeri (paras/tummin/suosituin).
+             → franchise_query=<nimi>
+             Esimerkit: "parhaat Gundam-sarjat", "tummimmat Star Wars -elokuvat"
 
-discover:    Lista teoksia annetuin kriteerein. Ei etsi yhtä tiettyä teosta.
-             Jos kyselyssä on näyttelijän/ohjaajan nimi + muita kriteerejä → discover + actor_name=<nimi>.
-             Esimerkkejä: "Tom Hanksin sotaelokuvat", "Nolan-elokuvat", "Cate Blanchettin draamat"
+discover:    Lista teoksia kriteereillä — ei yhtä nimettyä teosta.
+             Näyttelijä/ohjaaja + kriteeri → discover + actor_name=<nimi>
+             Esimerkit: "Tom Hanksin sotaelokuvat", "Nolan-elokuvat"
 
-lookup:      Tiedot yhdestä nimetystä teoksesta. Merkkejä: "kerro", "mikä on", teoksen nimi yksin.
+lookup:      Tiedot yhdestä nimetystä teoksesta.
+             Merkkejä: "kerro", "mikä on", teoksen nimi yksin.
 
-similar_to:  Teos mainitaan VERTAILUKOHTANA, ei kohteena.
-             Merkkejä: "kuten", "samanlainen kuin", "X tyylinen", "X oli hyvä anna lisää".
-             → aseta reference_titles listana
-             Yksi teos → ["The Lobster"]
-             Useita → ["The Lobster", "Parasite"]
-             TÄRKEÄÄ: Jos kyselyssä mainitaan suoratoistopalvelu, aseta watch_providers.
-             Esimerkki: "sarjoja kuten Downton Abbey Yle Areenasta"
-               → intent=similar_to, reference_titles=["Downton Abbey"], watch_providers=["Yle Areena"]
+similar_to:  Teos mainitaan vertailukohtana, ei kohteena.
+             Merkkejä: "kuten", "samanlainen kuin", "X tyylinen", "lisää kuin X".
+             → reference_titles=["Nimi"]  tai useita ["A", "B"]
+             Jos suoratoistopalvelu mainittu → watch_providers=["Palvelu"]
 
-person:      Tietoa henkilöstä. Henkilönimi YKSIN ilman muita kriteerejä.
-             Jos henkilönimen lisäksi on genre/vuosi/muu kriteeri → discover.
+person:      Henkilönimi yksin, ilman muita kriteerejä.
+             Henkilö + genre/vuosi/muu → discover.
 
-trending:    Suosio juuri nyt. "trendaa", "mitä katsotaan nyt".
+trending:    "trendaa", "mitä katsotaan nyt".
 
-## media_type — käytä AINOASTAAN "movie" tai "tv":
-- "movie" = elokuva, filmi, leffaa, elokuvia
-- "tv" = sarja, sarjoja, sarjaa, sarjat, k-drama, anime-sarja, show, series
+## media_type — AINOASTAAN "movie" tai "tv":
+- "movie" = elokuva, filmi, leffa
+- "tv" = sarja, sarjat, show, series, anime
 
-## Kieli — päättele kontekstista:
-- anime / animea / animeita / animesarjoja tai anime-tyylilajit (isekai, seinen, shonen, mecha,
-  slice of life, ecchi) → language="ja" + genres=["Animaatio"] + media_type="tv"
-- isekai → language="ja" + genres=["Animaatio"] + keywords=["isekai", "parallel world"] + media_type="tv"
-- "k-drama", "korealainen" → language="ko"
-- "bollywood", "intialainen elokuva" → language="hi"
-- "ranskalainen" → language="fr"
-
-## Aikavälit:
-- "X-luvulla" tai "X:stä lähtien" → year_from=X
-- "X-luvulta Y-luvulle" → year_from=X, year_to=Y
-- Yksittäinen vuosi → year=XXXX
-
-## Erityistilanteet:
-- "tässä seasonissa", "juuri nyt airing", "menossa olevat", "nyt pyörivät"
-  → airing_now=true + media_type="tv"
-- "elokuvat ja sarjat", "kaikki formaatit" → both_types=true
-
-## Tyylit → keywords (TMDB-englanniksi):
-- "synkkä", "tumma" → "dark fantasy"
-- "kosto" → "revenge"
-- "psykologinen" → "psychological"
-- "isekai" → "isekai", "parallel world"
-- "aikamatka" → "time travel"
-- "cyberpunk" → "cyberpunk"
-- "dystopia" → "dystopia"
-- "tosi tarina" → "based on true story"
-- "noir" → "neo-noir"
-- "twist" → "twist ending"
-- shounen-muoto → käytä aina "shounen" (ei "shonen")
-
-## Laatu ja järjestys:
-- "paras", "klassikko", "must see" → sort_by="vote_average.desc", min_votes=500
-- "suosituin" → sort_by="popularity.desc"
-- "uusin" → sort_by="release_date.desc"
+## Muut kentät:
+- genres: käytettävissä olevista genrenimistä (suomeksi)
+- keywords: englanniksi — tunnelma, tyyli, teemat
+  Anime-demografiat: josei=aikuisnaiset (kypsä romantiikka), seinen=aikuismiehet,
+  shounen=nuoret pojat — lisää hakuun kun anime + kohderyhmä mainitaan
+  Esimerkki: "aikuismainen romanttinen anime" → keywords: ["josei", "romance"]
+- year / year_from / year_to: päättele aikaväli kyselystä ("90-luvulta" → year_from=1990)
+- watch_providers: tarkka palvelun nimi annetusta listasta
+- sort_by: popularity.desc / vote_average.desc / release_date.desc
+- min_votes: jos "ei parhaita" / "vähemmän tunnettu" / "en ole nähnyt" → 50
+  (pienempi kynnys = laajempi pool, vähemmän mainstream-tuloksia)
+- language: ISO 639-1 alkuperäiskielelle
+- airing_now: true jos "nyt airing" / "menossa olevat" / "tässä seasonissa"
+- both_types: true jos halutaan sekä elokuvia että sarjoja
 """
 
     query: str = dspy.InputField(desc="Käyttäjän hakukysely")
