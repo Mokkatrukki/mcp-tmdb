@@ -7,6 +7,16 @@ load_dotenv()
 TMDB_API_KEY = os.getenv("TMDB_API_KEY_V3")
 TMDB_BASE = "https://api.themoviedb.org/3"
 
+_LOG_FILE = os.path.join(os.path.dirname(__file__), "..", "debug.log")
+
+
+def _log(section: str, text: str) -> None:
+    border = "─" * 60
+    entry = f"\n{border}\n[LOG] {section}\n{border}\n{text}\n"
+    with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+
 memory: dict = {
     "movie_genres": [],
     "tv_genres": [],

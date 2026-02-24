@@ -7,7 +7,8 @@ from pathlib import Path
 import dspy
 from dotenv import load_dotenv
 
-from .prompts import SmartSearchIntent, _postprocess, _log
+from .memory import _log
+from .prompts import SmartSearchIntent, _postprocess
 
 load_dotenv()
 
@@ -51,20 +52,39 @@ trending:    "trendaa", "mitä katsotaan nyt".
 - "movie" = elokuva, filmi, leffa
 - "tv" = sarja, sarjat, show, series, anime
 
-## Muut kentät:
+## Kentät intenteittäin:
+
+### lookup
+- title: teoksen nimi
+
+### person
+- person_name: henkilön nimi
+
+### franchise
+- franchise_query: franchisen nimi
+
+### similar_to
+- reference_titles: lista referenssiteosten nimistä, esim. ["Inception", "Interstellar"]
+- watch_providers: tarkka palvelun nimi annetusta listasta (valinnainen)
+
+### discover (+ similar_to)
+- watch_providers: tarkka palvelun nimi annetusta listasta
 - genres: käytettävissä olevista genrenimistä (suomeksi)
 - keywords: englanniksi — tunnelma, tyyli, teemat
   Anime-demografiat: josei=aikuisnaiset (kypsä romantiikka), seinen=aikuismiehet,
   shounen=nuoret pojat — lisää hakuun kun anime + kohderyhmä mainitaan
   Esimerkki: "aikuismainen romanttinen anime" → keywords: ["josei", "romance"]
 - year / year_from / year_to: päättele aikaväli kyselystä ("90-luvulta" → year_from=1990)
-- watch_providers: tarkka palvelun nimi annetusta listasta
 - sort_by: popularity.desc / vote_average.desc / release_date.desc
 - min_votes: jos "ei parhaita" / "vähemmän tunnettu" / "en ole nähnyt" → 50
   (pienempi kynnys = laajempi pool, vähemmän mainstream-tuloksia)
 - language: ISO 639-1 alkuperäiskielelle
+- actor_name: näyttelijän/ohjaajan nimi, kun haetaan henkilön teoksia
 - airing_now: true jos "nyt airing" / "menossa olevat" / "tässä seasonissa"
 - both_types: true jos halutaan sekä elokuvia että sarjoja
+
+### trending
+- time_window: "day" tai "week"
 """
 
     query: str = dspy.InputField(desc="Käyttäjän hakukysely")

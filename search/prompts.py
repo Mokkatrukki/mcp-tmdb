@@ -1,32 +1,20 @@
 import asyncio
-import os
+from typing import Literal
 from pydantic import BaseModel
-from google import genai
-from google.genai import types as genai_types
-from dotenv import load_dotenv
 import dspy
 
-
-_LOG_FILE = os.path.join(os.path.dirname(__file__), "..", "debug.log")
-
-
-def _log(section: str, text: str) -> None:
-    border = "─" * 60
-    entry = f"\n{border}\n[LOG] {section}\n{border}\n{text}\n"
-    with open(_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(entry)
-
-load_dotenv()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+from .memory import _log
 
 
 class SmartSearchIntent(BaseModel):
-    intent: str           # discover|lookup|person|similar_to|trending
-    confidence: str       # high|low
-    media_type: str = "movie"   # MUST be exactly "movie" or "tv" — nothing else
+    # --- Kaikille intenteille ---
+    intent: Literal["discover", "similar_to", "franchise", "lookup", "person", "trending"]
+    media_type: Literal["movie", "tv"] = "movie"
+
+    # --- trending ---
     time_window: str = "week"
+
+    # --- discover ---
     genres: list[str] | None = None
     keywords: list[str] | None = None
     year: int | None = None
@@ -34,16 +22,25 @@ class SmartSearchIntent(BaseModel):
     year_to: int | None = None
     min_rating: float | None = None
     language: str | None = None
-    watch_providers: list[str] | None = None
-    person_name: str | None = None
-    title: str | None = None
-    name: str | None = None
-    reference_titles: list[str] | None = None
     sort_by: str = "popularity.desc"
     min_votes: int = 100
     airing_now: bool = False
     both_types: bool = False
     actor_name: str | None = None
+
+    # --- discover + similar_to ---
+    watch_providers: list[str] | None = None
+
+    # --- similar_to ---
+    reference_titles: list[str] | None = None
+
+    # --- lookup ---
+    title: str | None = None
+
+    # --- person ---
+    person_name: str | None = None
+
+    # --- franchise ---
     franchise_query: str | None = None
 
 
@@ -168,7 +165,18 @@ class _RerankByReference(dspy.Signature):
     result: _RerankedIds = dspy.OutputField(desc="ID-lista parhaimmasta huonoimpaan, max 12")
 
 
+class _RerankByCriteria(dspy.Signature):
+    """Olet elokuva- ja sarjasuositin. Järjestä kandidaatit niin että parhaiten
+    käyttäjän hakua vastaavat ovat ensin. Palauta enintään 12 ID:tä
+    parhaimmasta huonoimpaan. Sisällytä vain relevantit teokset."""
+
+    user_query: str = dspy.InputField(desc="Käyttäjän hakukysely")
+    candidates: str = dspy.InputField(desc="Kandidaatit muodossa [ID] Nimi (vuosi) - kuvaus")
+    result: _RerankedIds = dspy.OutputField(desc="ID-lista parhaimmasta huonoimpaan, max 12")
+
+
 _reranker = dspy.ChainOfThought(_RerankByReference)
+_criteria_reranker = dspy.ChainOfThought(_RerankByCriteria)
 
 
 async def rerank_candidates(
@@ -217,26 +225,15 @@ async def rerank_by_criteria(user_query: str, candidates: list[dict]) -> list[in
         for c in candidates
     )
 
-    prompt = f"""Käyttäjä etsii: "{user_query}"
+    _log("DSPY CRITERIA RERANK INPUT", f"query={user_query}\ncands={cand_lines[:300]}")
 
-Järjestä alla olevat teokset niin että parhaiten käyttäjän hakua vastaavat ovat ensin.
-Palauta lista ID-numeroista parhaimmasta huonoimpaan. Sisällytä vain relevantit teokset.
-
-Kandidaatit:
-{cand_lines}"""
-
-    _log("GEMINI #2 PROMPT (rerank_by_criteria)", prompt)
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_RerankedIds,
-        ),
+    prediction = await asyncio.to_thread(
+        _criteria_reranker,
+        user_query=user_query,
+        candidates=cand_lines,
     )
-    _log("GEMINI #2 VASTAUS (rerank_by_criteria)", response.text)
-    result = _RerankedIds.model_validate_json(response.text)
-    return result.ids
+
+    _log("DSPY CRITERIA RERANK TULOS", str(prediction.result.ids))
+    return prediction.result.ids
 
 
